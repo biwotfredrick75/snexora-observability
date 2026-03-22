@@ -6,8 +6,9 @@ build:
   stage: build
   image: php:8.3-cli
   before_script:
-    - apt-get update -qq && apt-get install -qq -y git unzip libzip-dev libpng-dev libonig-dev libxml2-dev
-    - docker-php-ext-install zip pdo pdo_mysql mbstring xml
+    - apt-get update -qq && apt-get install -qq -y git unzip libzip-dev libpng-dev libonig-dev libxml2-dev libjpeg-dev libfreetype6-dev
+    - docker-php-ext-configure gd --with-freetype --with-jpeg
+    - docker-php-ext-install zip pdo pdo_mysql mbstring xml gd
     - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
   script:
     - composer install --no-dev --optimize-autoloader --no-interaction
