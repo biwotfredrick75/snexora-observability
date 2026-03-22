@@ -36,10 +36,10 @@ deploy:
           --exclude=tests/
           --exclude=.gitlab-ci.yml
           --exclude=storage/logs/
-          . backend;
+        . backend;
         bye"
   only:
     - main
   environment:
     name: production
-    url: https://nexoraerp.m-strategicinvestments.com
+    url: https://nexoraerp.m-strategicinvestments.com/backend
