@@ -11,10 +11,13 @@ return new class extends Migration
      */
     public function up(): void
     {
-        // Columns were partially added in a failed run — only add FKs
         Schema::table('gl_account_groups', function (Blueprint $table) {
-            $table->foreign('class_id')->references('id')->on('gl_account_classes')->nullOnDelete();
-            $table->foreign('parent_id')->references('id')->on('gl_account_groups')->nullOnDelete();
+            if (!Schema::hasColumn('gl_account_groups', 'class_id')) {
+                $table->foreignId('class_id')->nullable()->constrained('gl_account_classes')->nullOnDelete();
+            }
+            if (!Schema::hasColumn('gl_account_groups', 'parent_id')) {
+                $table->foreignId('parent_id')->nullable()->constrained('gl_account_groups')->nullOnDelete();
+            }
         });
     }
 
