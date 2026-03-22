@@ -1,0 +1,44 @@
+stages:
+  - build
+  - deploy
+
+build:
+  stage: build
+  image: php:8.3-cli
+  before_script:
+    - apt-get update -qq && apt-get install -qq -y git unzip libzip-dev libpng-dev libonig-dev libxml2-dev
+    - docker-php-ext-install zip pdo pdo_mysql mbstring xml
+    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+  script:
+    - composer install --no-dev --optimize-autoloader --no-interaction
+  artifacts:
+    paths:
+      - vendor/
+    expire_in: 1 hour
+  only:
+    - main
+
+deploy:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache lftp
+  script:
+    - |
+      lftp -c "
+        set ftp:ssl-allow yes;
+        set ssl:verify-certificate no;
+        open -u $FTP_USER,$FTP_PASSWORD $FTP_HOST;
+        mirror --reverse --delete --verbose
+          --exclude=.env
+          --exclude=.git/
+          --exclude=tests/
+          --exclude=.gitlab-ci.yml
+          --exclude=storage/logs/
+          . backend;
+        bye"
+  only:
+    - main
+  environment:
+    name: production
+    url: https://nexoraerp.m-strategicinvestments.com
