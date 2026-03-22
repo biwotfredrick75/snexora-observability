@@ -30,6 +30,7 @@ deploy:
         set ftp:ssl-allow yes;
         set ssl:verify-certificate no;
         open -u $FTP_USER,$FTP_PASSWORD $FTP_HOST;
+        cd ..;
         mkdir -p backend;
         cd backend;
         mirror --reverse --verbose
