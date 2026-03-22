@@ -10,7 +10,7 @@ return new class extends Migration
     public function up(): void
     {
         // Disable FK checks so we can drop/recreate freely
-        DB::statement('SET FOREIGN_KEY_CHECKS=0');
+        DB::statement('SET session_replication_role = replica');
 
         // Drop tables that reference items
         Schema::dropIfExists('item_reorder_levels');
@@ -112,17 +112,17 @@ return new class extends Migration
             $table->index('stock_id');
         });
 
-        DB::statement('SET FOREIGN_KEY_CHECKS=1');
+        DB::statement('SET session_replication_role = DEFAULT');
     }
 
     public function down(): void
     {
-        DB::statement('SET FOREIGN_KEY_CHECKS=0');
+        DB::statement('SET session_replication_role = replica');
         Schema::dropIfExists('item_conversion_items');
         Schema::dropIfExists('item_reorder_levels');
         Schema::dropIfExists('item_purchase_prices');
         Schema::dropIfExists('item_sales_prices');
         Schema::dropIfExists('items');
-        DB::statement('SET FOREIGN_KEY_CHECKS=1');
+        DB::statement('SET session_replication_role = DEFAULT');
     }
 };

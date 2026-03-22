@@ -9,23 +9,23 @@ return new class extends Migration
 {
     public function up(): void
     {
-        DB::statement('SET FOREIGN_KEY_CHECKS=0');
+        DB::statement('SET session_replication_role = replica');
 
         Schema::table('sales_kit_items', function (Blueprint $table) {
             $table->string('component_id', 20)->change();
         });
 
-        DB::statement('SET FOREIGN_KEY_CHECKS=1');
+        DB::statement('SET session_replication_role = DEFAULT');
     }
 
     public function down(): void
     {
-        DB::statement('SET FOREIGN_KEY_CHECKS=0');
+        DB::statement('SET session_replication_role = replica');
 
         Schema::table('sales_kit_items', function (Blueprint $table) {
             $table->unsignedBigInteger('component_id')->change();
         });
 
-        DB::statement('SET FOREIGN_KEY_CHECKS=1');
+        DB::statement('SET session_replication_role = DEFAULT');
     }
 };
