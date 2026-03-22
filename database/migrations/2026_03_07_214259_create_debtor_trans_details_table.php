@@ -21,10 +21,10 @@ class CreateDebtorTransDetailsTable extends Migration
             $table->decimal('discountPercent', 5,2)->default(0);
             $table->decimal('standardCost', 18,2)->default(0);
             $table->decimal('quantityDone', 18,2)->default(0);
-            $table->integer('sourceId');
+            $table->integer('sourceId')->default(0);
             $table->decimal('quantityClaimed', 18,2)->default(0);
             $table->integer('quantityReturn')->default(0);
-            $table->decimal('quantityDelivered', 18,2);
+            $table->decimal('quantityDelivered', 18,2)->default(0);
             $table->string('subUnit', 250)->nullable();
             $table->json('inspections')->nullable();
             /*
@@ -42,10 +42,7 @@ class CreateDebtorTransDetailsTable extends Migration
             | Foreign Key
             |--------------------------------------------------------------------------
             */
-            $table->foreign(['debtorTransactionType', 'debtorTransactionNumber'])
-                ->references(['transactionType','transactionNumber'])
-                ->on('debtorTransactions')
-                ->onDelete('cascade'); // optional: delete line items if transaction is deleted
+            // FK removed: debtorTransactions table uses different schema
         });
     }
 

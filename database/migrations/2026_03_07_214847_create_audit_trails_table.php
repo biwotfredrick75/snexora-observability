@@ -13,10 +13,10 @@ class CreateAuditTrailTable extends Migration
             $table->unsignedSmallInteger('transactionType')->default(0); // type
             $table->unsignedInteger('transactionNumber')->default(0);    // trans_no
             $table->unsignedSmallInteger('userId')->default(0);          // user
-            $table->timestamp('stamp')->useCurrent()->useCurrentOnUpdate(); // stamp
+            $table->timestamp('stamp')->useCurrent(); // stamp
             $table->string('description', 255)->nullable();                // description
             $table->integer('fiscalYear')->default(0);                     // fiscal_year
-            $table->date('glDate')->default('0000-00-00');                // gl_date
+            $table->date('glDate')->nullable();                           // gl_date
             $table->unsignedInteger('glSequence')->nullable();             // gl_seq
             /*
             |--------------------------------------------------------------------------
