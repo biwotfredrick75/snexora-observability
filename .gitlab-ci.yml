@@ -26,7 +26,7 @@ deploy:
     - apk add --no-cache lftp
   script:
     - |
-      lftp -c "set ftp:ssl-allow yes; set ssl:verify-certificate no; open -u $FTP_USER,$FTP_PASSWORD $FTP_HOST; mirror --reverse --delete --verbose --exclude=^\.env$ --exclude=^\.git/ --exclude=^tests/ --exclude=^\.gitlab-ci\.yml$ --exclude=^storage/logs/ . backend; bye"
+      lftp -c "set ftp:ssl-allow yes; set ssl:verify-certificate no; open -u $FTP_USER,$FTP_PASSWORD $FTP_HOST; cd nexoraerp.m-strategicinvestments.com/backend; mirror --reverse --delete --verbose --exclude=^\.env$ --exclude=^\.git/ --exclude=^tests/ --exclude=^\.gitlab-ci\.yml$ --exclude=^storage/logs/ . .; bye"
   only:
     - main
   environment:
