@@ -1,34 +1,31 @@
 <?php
+  ini_set('display_errors', 1);
+  error_reporting(E_ALL);
+  set_time_limit(300);
+  define('LARAVEL_START', microtime(true));
 
-// IMPORTANT: Delete this file after running!
-define('LARAVEL_START', microtime(true));
+  require __DIR__ . '/vendor/autoload.php';
+  $app = require __DIR__ . '/bootstrap/app.php';
+  $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
 
-require __DIR__ . '/../vendor/autoload.php';
+  echo '<pre>';
+  echo "Running migrations...\n";
+  $kernel->call('migrate', ['--force' => true]);
+  echo $kernel->output();
 
-$app = require __DIR__ . '/../bootstrap/app.php';
-$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+  echo "\nInstalling Passport...\n";
+  $kernel->call('passport:install', ['--force' => true]);
+  echo $kernel->output();
 
-echo '<pre>';
+  echo "\nSeeding roles...\n";
+  $kernel->call('db:seed', ['--class' => 'RolePermissionSeeder', '--force' =>
+  true]);
+  echo $kernel->output();
 
-echo "=== Running Migrations ===\n";
-$kernel->call('migrate', ['--force' => true]);
-echo $kernel->output();
+  echo "\nSeeding transaction refs...\n";
+  $kernel->call('db:seed', ['--class' => 'TransactionReferenceSeeder', '--force'
+   => true]);
+  echo $kernel->output();
 
-echo "\n=== Installing Passport ===\n";
-$kernel->call('passport:install', ['--force' => true]);
-echo $kernel->output();
-
-echo "\n=== Seeding Roles & Permissions ===\n";
-$kernel->call('db:seed', ['--class' => 'RolePermissionSeeder', '--force' => true]);
-echo $kernel->output();
-
-echo "\n=== Seeding Transaction References ===\n";
-$kernel->call('db:seed', ['--class' => 'TransactionReferenceSeeder', '--force' => true]);
-echo $kernel->output();
-
-echo "\n=== Clearing Config Cache ===\n";
-$kernel->call('config:clear');
-echo $kernel->output();
-
-echo "\nDONE! Delete this file immediately from public/run-setup.php\n";
-echo '</pre>';
+  echo "\nDONE! Delete this file now.\n";
+  echo '</pre>';

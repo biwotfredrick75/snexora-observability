@@ -24,7 +24,7 @@ class ChartOfAccountsController extends Controller
             $query->where('group_id', $request->group_id);
         }
 
-        $accounts = $query->orderBy('account_code')->get();
+        $accounts = $query->orderBy('code')->get();
 
         return ApiResponse::success($accounts->toArray(), 'GL accounts retrieved');
     }

@@ -10,6 +10,7 @@ use App\Models\DebtorAllocation;
 use App\Models\GldTransaction;
 use App\Models\SalesInvoice;
 use App\Models\StockMovement;
+use App\Services\Blockchain\BlockchainService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -319,6 +320,22 @@ class CustomerPaymentController extends Controller
             }
 
             broadcast(new DashboardEvent('payments', 'payment_posted'));
+
+            // ── Anchor on-chain (fire-and-forget — never blocks the response) ──
+            try {
+                (new BlockchainService())->anchorCustomerPayment(
+                    paymentId:   $payment->id,
+                    paymentNo:   $payment->payment_no,
+                    debtorNo:    $payment->debtor_no,
+                    amount:      (float) $payment->amount,
+                    paymentDate: $payment->payment_date,
+                    paymentType: $payment->payment_type ?? 'normal',
+                    createdBy:   $createdBy,
+                );
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('CustomerPayment blockchain anchor failed: ' . $e->getMessage());
+            }
+
             return ApiResponse::created($payment->load('allocations'), 'Payment posted successfully');
         });
     }

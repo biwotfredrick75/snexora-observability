@@ -98,6 +98,7 @@ class FarmerPaymentProcessController extends Controller
             'failed_count'     => $batch->failed_count,
             'percentage'       => $pct,
             'total_gross'      => (float) $batch->total_gross,
+            'total_advances'   => (float) $batch->total_advances,
             'total_deductions' => (float) $batch->total_deductions,
             'total_net'        => (float) $batch->total_net,
             'error_message'    => $batch->error_message,

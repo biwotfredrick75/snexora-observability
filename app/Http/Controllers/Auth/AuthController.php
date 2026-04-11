@@ -28,7 +28,7 @@ class AuthController extends Controller
      */
     public function login(LoginRequest $request): JsonResponse
     {
-        $user = $this->authService->authenticate(
+        $user = $this->authService->authenticateByEmail(
             $request->validated('email'),
             $request->validated('password')
         );
@@ -41,14 +41,16 @@ class AuthController extends Controller
 
         return ApiResponse::success([
             'user' => [
-                'id' => $user->id,
-                'name' => $user->real_name,
-                'email' => $user->email,
-                'permissions' => $user->getAllPermissions()->pluck('name'),
-                'roles' => $user->getRoleNames(),
+                'id'            => $user->id,
+                'user_id'       => $user->user_id,
+                'name'          => $user->real_name,
+                'email'         => $user->email,
+                'default_store' => $user->default_store,
+                'permissions'   => $user->getAllPermissions()->pluck('name'),
+                'roles'         => $user->getRoleNames(),
             ],
-            'token' => $token,
-            "status"=>200
+            'token'  => $token,
+            'status' => 200,
         ], 'Login successful');
     }
 

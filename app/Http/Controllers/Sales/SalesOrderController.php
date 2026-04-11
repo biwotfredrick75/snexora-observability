@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Sales;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\SalesOrder;
@@ -12,10 +13,13 @@ use App\Models\StockMovement;
 use App\Models\GldTransaction;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Traits\ValidatesSellingPrice;
 use Illuminate\Support\Facades\DB;
 
 class SalesOrderController extends Controller
 {
+    use ValidatesSellingPrice;
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private function recalcTotals(SalesOrder $order): void
@@ -91,6 +95,11 @@ class SalesOrderController extends Controller
             'items.*.standard_cost'=> 'nullable|numeric|min:0',
         ]);
 
+        $priceErrors = $this->checkItemPrices($validated['items']);
+        if (! empty($priceErrors)) {
+            return ApiResponse::validationError($priceErrors);
+        }
+
         return DB::transaction(function () use ($validated) {
             $order = SalesOrder::create([
                 'so_no'              => 'TEMP-' . uniqid(),
@@ -139,6 +148,7 @@ class SalesOrderController extends Controller
             $order->amount_total = round($subTotal + ($validated['shipping_charge'] ?? 0), 2);
             $order->save();
 
+            broadcast(new DashboardEvent('sales_order', 'created', ['so_no' => $order->so_no, 'amount' => $order->amount_total]));
             return ApiResponse::created($order->load('items'), 'Sales order created');
         });
     }
@@ -196,6 +206,7 @@ class SalesOrderController extends Controller
         }
 
         $order->update(['status' => 'placed']);
+        broadcast(new DashboardEvent('sales_order', 'placed', ['so_no' => $order->so_no, 'amount' => $order->amount_total]));
         return ApiResponse::success($order, 'Sales order placed');
     }
 
@@ -210,6 +221,7 @@ class SalesOrderController extends Controller
         }
 
         $order->update(['status' => 'cancelled']);
+        broadcast(new DashboardEvent('sales_order', 'cancelled', ['so_no' => $order->so_no]));
         return ApiResponse::success($order, 'Sales order cancelled');
     }
 
@@ -229,6 +241,11 @@ class SalesOrderController extends Controller
             'unit'          => 'nullable|string|max:20',
             'standard_cost' => 'nullable|numeric|min:0',
         ]);
+
+        $priceError = $this->checkSingleItemPrice($validated['stock_id'], (float) $validated['price']);
+        if ($priceError) {
+            return ApiResponse::validationError(['price' => $priceError]);
+        }
 
         $lineTotal = $this->calcLineTotal($validated);
 

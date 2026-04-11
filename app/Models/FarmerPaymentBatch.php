@@ -9,7 +9,7 @@ class FarmerPaymentBatch extends Model
     protected $fillable = [
         'month', 'year', 'date_paid', 'reference', 'payment_term_id', 'route_id',
         'total_farmers', 'processed_count', 'failed_count',
-        'total_gross', 'total_deductions', 'total_net',
+        'total_gross', 'total_advances', 'total_deductions', 'total_net',
         'status', 'error_message', 'created_by', 'started_at', 'completed_at',
     ];
 

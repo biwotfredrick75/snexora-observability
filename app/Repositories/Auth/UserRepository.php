@@ -30,6 +30,14 @@ class UserRepository extends BaseRepository
     }
 
     /**
+     * Find user by loc_code (stored in user_id field).
+     */
+    public function findByLocCode(string $locCode): ?User
+    {
+        return $this->findBy('user_id', $locCode);
+    }
+
+    /**
      * Get users by role.
      */
     public function getUsersByRole(string $roleName)

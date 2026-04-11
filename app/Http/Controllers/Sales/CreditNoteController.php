@@ -193,9 +193,13 @@ class CreditNoteController extends Controller
 
     private function placeReturn(CreditNote $cn, object $company, object $glSetting, string $createdBy, string $cnNo, string $tranDate, string $debtorsGlCode): void
     {
-        $locCode = $cn->location_id
-            ? DB::table('inventory_locations')->where('id', $cn->location_id)->value('code')
-            : null;
+        // Resolve location code: credit note location → invoice location → first active location
+        $locationId = $cn->location_id
+            ?? ($cn->inv_id ? DB::table('sales_invoices')->where('id', $cn->inv_id)->value('location_id') : null);
+
+        $locCode = $locationId
+            ? DB::table('inventory_locations')->where('id', $locationId)->value('code')
+            : DB::table('inventory_locations')->where('inactive', 0)->value('code');
 
         $totalGrossReturns = 0.0;
 

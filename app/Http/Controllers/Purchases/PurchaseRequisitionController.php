@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Purchases;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\CompanyPreference;
 use App\Models\PurchaseRequisition;
 use App\Models\PurchaseRequisitionItem;
 use Illuminate\Http\JsonResponse;
@@ -139,10 +140,21 @@ class PurchaseRequisitionController extends Controller
 
     public function submit(int $id): JsonResponse
     {
-        $pr = PurchaseRequisition::findOrFail($id);
+        $pr = PurchaseRequisition::with('items')->findOrFail($id);
         if ($pr->status !== 'draft') return ApiResponse::error('Only draft PRs can be submitted', 422);
+
+        $prefs = CompanyPreference::first();
+        $noApprovals = !($prefs?->pr_requires_hod_approval)
+                    && !($prefs?->pr_requires_finance_approval)
+                    && !($prefs?->pr_requires_ceo_approval);
+
+        if ($noApprovals) {
+            $pr->update(['status' => 'ceo_approved']);
+            return ApiResponse::success($pr->fresh('items'), 'Requisition approved — no approvals configured');
+        }
+
         $pr->update(['status' => 'submitted']);
-        return ApiResponse::success($pr, 'Requisition submitted');
+        return ApiResponse::success($pr, 'Requisition submitted for approval');
     }
 
     public function hodApprove(int $id): JsonResponse

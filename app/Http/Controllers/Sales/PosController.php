@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Sales;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\GldTransaction;
@@ -9,6 +10,8 @@ use App\Models\Item;
 use App\Models\ItemSalesPrice;
 use App\Models\PosTransaction;
 use App\Models\PosTransactionItem;
+use App\Models\SalesInvoice;
+use App\Models\SalesInvoiceItem;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\StockMovement;
@@ -566,10 +569,39 @@ class PosController extends Controller
                 ]);
             }
 
+            // ── 5. Sales Invoice (for visibility in the Sales module) ─────────
+            $invoice = SalesInvoice::create([
+                'inv_no'        => SalesInvoice::nextInvNo(),
+                'pos_trans_id'  => $sale->id,
+                'debtor_no'     => $debtorNo,
+                'customer_name' => $data['customer_name'] ?? ($debtorNo ? null : 'Walk-in Customer'),
+                'so_id'         => $so?->id,
+                'invoice_date'  => $today,
+                'sub_total'     => round($subtotal, 2),
+                'amount_total'  => $total,
+                'status'        => 'placed',
+                'customer_ref'  => $sale->transaction_no,
+                'comments'      => $data['notes'] ?? null,
+                'created_by'    => $createdBy,
+            ]);
+
+            foreach ($lineItems as $line) {
+                SalesInvoiceItem::create([
+                    'inv_id'       => $invoice->id,
+                    'stock_id'     => $line['stock_id'],
+                    'description'  => $line['description'],
+                    'qty'          => $line['quantity'],
+                    'price'        => $line['unit_price'],
+                    'discount_pct' => $line['discount_percent'],
+                    'line_total'   => $line['line_total'],
+                ]);
+            }
+
             $msg = $so
                 ? "Sale completed — Sales Order {$soNo} created"
                 : 'Sale completed (walk-in — no sales order created)';
 
+            broadcast(new DashboardEvent('direct_sale', 'created', ['ref' => $sale->receipt_no, 'amount' => $sale->total_amount]));
             return ApiResponse::created(
                 array_merge($sale->load('items')->toArray(), ['so_no' => $so ? $soNo : null]),
                 $msg
@@ -597,6 +629,7 @@ class PosController extends Controller
             'void_reason' => $data['void_reason'],
         ]);
 
+        broadcast(new DashboardEvent('direct_sale', 'voided', ['ref' => $sale->receipt_no]));
         return ApiResponse::updated($sale, 'Sale voided');
     }
 }

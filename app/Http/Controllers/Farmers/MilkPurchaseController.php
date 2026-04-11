@@ -25,11 +25,21 @@ class MilkPurchaseController extends Controller
     {
         $farmerId = $request->filled('farmer_id') ? (int) $request->farmer_id : null;
 
-        $eagerLoad = $farmerId
-            ? ['items' => fn ($q) => $q->where('farmer_id', $farmerId), 'route', 'shift']
-            : ['items', 'route', 'shift', 'graderLocation'];
+        // Always require a date range — default to today to avoid full-table scans
+        $from = $request->filled('from') ? $request->from : now()->toDateString();
+        $to   = $request->filled('to')   ? $request->to   : now()->toDateString();
 
-        $query = MilkPurchase::with($eagerLoad)->orderByDesc('invoice_date');
+        $query = MilkPurchase::with([
+                'route:id,route_name',
+                'shift:id,description',
+                'items:id,purchase_id,farmer_id,quantity,unit_price,total_price',
+                'items.farmer:id,farmer_no,full_name',
+            ])
+            ->select(['id', 'reference_no', 'invoice_date', 'created_at', 'status',
+                      'total_qty', 'total_amount', 'route_id', 'shift_id', 'grader_id'])
+            ->whereDate('invoice_date', '>=', $from)
+            ->whereDate('invoice_date', '<=', $to)
+            ->orderByDesc('invoice_date');
 
         if ($request->filled('status')) {
             $query->where('status', $request->status);
@@ -39,15 +49,15 @@ class MilkPurchaseController extends Controller
             $query->whereHas('items', fn ($q) => $q->where('farmer_id', $farmerId));
         }
 
-        if ($request->filled('from')) {
-            $query->whereDate('invoice_date', '>=', $request->from);
+        if ($request->filled('route_id')) {
+            $query->where('route_id', (int) $request->route_id);
         }
 
-        if ($request->filled('to')) {
-            $query->whereDate('invoice_date', '<=', $request->to);
+        if ($request->filled('shift_id')) {
+            $query->where('shift_id', (int) $request->shift_id);
         }
 
-        $limit = min((int) $request->get('limit', $farmerId ? 100 : 500), 500);
+        $limit = min((int) $request->get('limit', 100), 200);
 
         return ApiResponse::success($query->limit($limit)->get(), 'Milk purchases retrieved');
     }
@@ -161,7 +171,11 @@ class MilkPurchaseController extends Controller
 
             DB::commit();
 
-            broadcast(new DashboardEvent('milk_purchase', 'submitted', ['id' => $purchase->id]));
+            broadcast(new DashboardEvent('milk_purchase', 'collected', [
+                'ref'    => $ref,
+                'qty'    => round($totalQty, 2),
+                'amount' => round($totalAmount, 2),
+            ]));
 
             return ApiResponse::created(
                 $purchase->load(['items.farmer', 'route', 'shift', 'graderLocation']),

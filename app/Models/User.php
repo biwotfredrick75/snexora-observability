@@ -55,6 +55,7 @@ class User extends Authenticatable
         'save_report_selections',
         'use_date_picker',
         'default_store',
+        'route_id',
         'query_size',
         'inactive',
         'last_visit_date',

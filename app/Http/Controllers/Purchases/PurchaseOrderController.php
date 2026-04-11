@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Purchases;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\CompanyPreference;
 use App\Models\GldTransaction;
 use App\Models\GlSetting;
 use App\Models\PurchaseOrder;
@@ -187,10 +188,31 @@ class PurchaseOrderController extends Controller
 
     public function submit(int $id): JsonResponse
     {
-        $po = PurchaseOrder::findOrFail($id);
+        $po = PurchaseOrder::with('items')->findOrFail($id);
         if ($po->status !== 'draft') return ApiResponse::error('Only draft orders can be submitted', 422);
+
+        $prefs = CompanyPreference::first();
+        $noApprovals = !($prefs?->po_requires_hod_approval)
+                    && !($prefs?->po_requires_finance_approval)
+                    && !($prefs?->po_requires_ceo_approval);
+
+        if ($noApprovals) {
+            return DB::transaction(function () use ($po) {
+                $approver = auth()->user()?->user_id ?? 'system';
+
+                if ($po->type === 'grn') {
+                    $this->postGrnReceipt($po, $approver);
+                    $po->update(['status' => 'received']);
+                    return ApiResponse::success($po->fresh(['items', 'supplier:supplierId,supplierName,supplierReference']), 'GRN posted — stock & GL updated');
+                }
+
+                $po->update(['status' => 'ceo_approved']);
+                return ApiResponse::success($po->fresh(['items', 'supplier:supplierId,supplierName,supplierReference']), 'Order approved — no approvals configured');
+            });
+        }
+
         $po->update(['status' => 'submitted']);
-        return ApiResponse::success($po, 'Order submitted');
+        return ApiResponse::success($po, 'Order submitted for approval');
     }
 
     public function hodApprove(int $id): JsonResponse

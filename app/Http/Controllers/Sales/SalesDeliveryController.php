@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Sales;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\GldTransaction;
@@ -12,10 +13,13 @@ use App\Models\SalesInvoiceItem;
 use App\Models\StockMovement;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Traits\ValidatesSellingPrice;
 use Illuminate\Support\Facades\DB;
 
 class SalesDeliveryController extends Controller
 {
+    use ValidatesSellingPrice;
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private function recalcTotals(SalesDelivery $delivery): void
@@ -96,6 +100,11 @@ class SalesDeliveryController extends Controller
             'items.*.standard_cost'=> 'nullable|numeric|min:0',
         ]);
 
+        $priceErrors = $this->checkItemPrices($validated['items']);
+        if (! empty($priceErrors)) {
+            return ApiResponse::validationError($priceErrors);
+        }
+
         return DB::transaction(function () use ($validated) {
             $delivery = SalesDelivery::create([
                 'dn_no'              => 'TEMP-' . uniqid(),
@@ -145,6 +154,7 @@ class SalesDeliveryController extends Controller
             $delivery->amount_total = round($subTotal + ($validated['shipping_charge'] ?? 0), 2);
             $delivery->save();
 
+            broadcast(new DashboardEvent('delivery', 'created', ['ref' => $delivery->delivery_no, 'amount' => $delivery->amount_total]));
             return ApiResponse::created($delivery->load('items'), 'Sales delivery created');
         });
     }
@@ -201,20 +211,28 @@ class SalesDeliveryController extends Controller
             return ApiResponse::error('Delivery is not in draft status', 422);
         }
 
-        return DB::transaction(function () use ($delivery) {
+        $company   = DB::table('company_preferences')->first();
+        $glSetting = DB::table('gl_settings')->first();
+
+        return DB::transaction(function () use ($delivery, $company, $glSetting) {
             $delivery->update(['status' => 'placed']);
 
-            $createdBy = auth()->user()?->user_id ?? 'system';
-            $dnNo      = $delivery->dn_no;
-            $tranDate  = $delivery->delivery_date?->toDateString() ?? now()->toDateString();
+            $createdBy     = auth()->user()?->user_id ?? 'system';
+            $dnNo          = $delivery->dn_no;
+            $tranDate      = $delivery->delivery_date?->toDateString() ?? now()->toDateString();
+            $totalGrossSales = 0.0;
+            $totalDiscounts  = 0.0;
+            $totalTax        = 0.0;
 
             foreach ($delivery->items as $dnItem) {
                 $item = DB::table('items')->where('stock_id', $dnItem->stock_id)
-                    ->select('cogs_account', 'inventory_account', 'dimension_id', 'dimension2_id')
+                    ->select('cogs_account', 'inventory_account', 'sales_account',
+                             'tax_type_id', 'dimension_id', 'dimension2_id')
                     ->first();
 
-                if (! $item || ! $item->cogs_account || ! $item->inventory_account) continue;
+                if (! $item) continue;
 
+                $qty          = (float) $dnItem->qty;
                 $standardCost = (float) ($dnItem->standard_cost ?? 0);
                 if ($standardCost == 0) {
                     $standardCost = (float) (DB::table('items')
@@ -223,39 +241,152 @@ class SalesDeliveryController extends Controller
                         ->value('c') ?? 0);
                 }
 
-                $cogsAmount = round($standardCost * (float) $dnItem->qty, 4);
-                if ($cogsAmount == 0) continue;
-
                 $dimId  = ($item->dimension_id  ?? null) ?: $delivery->dimension_id;
                 $dim2Id = ($item->dimension2_id ?? null) ?: $delivery->dimension2_id;
 
+                // ── COGS / Inventory ──────────────────────────────────────────
+                if ($item->cogs_account && $item->inventory_account) {
+                    $cogsAmount = round($standardCost * $qty, 4);
+                    if ($cogsAmount != 0) {
+                        GldTransaction::create([
+                            'trans_no'     => $delivery->id,
+                            'type'         => StockMovement::TYPE_DELIVERY,
+                            'tran_date'    => $tranDate,
+                            'account_code' => $item->cogs_account,
+                            'reference'    => $dnNo,
+                            'narration'    => "COGS — {$dnItem->description} ({$dnNo})",
+                            'amount'       => $cogsAmount,
+                            'created_by'   => $createdBy,
+                            'dimension_id' => $dimId,
+                            'dimension2_id'=> $dim2Id,
+                        ]);
+                        GldTransaction::create([
+                            'trans_no'     => $delivery->id,
+                            'type'         => StockMovement::TYPE_DELIVERY,
+                            'tran_date'    => $tranDate,
+                            'account_code' => $item->inventory_account,
+                            'reference'    => $dnNo,
+                            'narration'    => "Inventory out — {$dnItem->description} ({$dnNo})",
+                            'amount'       => -$cogsAmount,
+                            'created_by'   => $createdBy,
+                            'dimension_id' => $dimId,
+                            'dimension2_id'=> $dim2Id,
+                        ]);
+                    }
+                }
+
+                // ── Revenue: Sales / Tax / Discount ───────────────────────────
+                $salesAccount = ($item->sales_account ?: null)
+                    ?: ($glSetting->items_sales_account ?: null)
+                    ?: ($glSetting->sales_account ?: null)
+                    ?: 'SALES_REVENUE';
+
+                $grossAmount    = round($qty * $dnItem->price, 2);
+                $discountAmount = round($grossAmount * ($dnItem->discount_pct / 100), 2);
+                $netAfterDisc   = $grossAmount - $discountAmount;
+
+                $taxAmount  = 0.0;
+                $taxAccount = null;
+                if ($item->tax_type_id) {
+                    $taxType = DB::table('tax_types')->where('id', $item->tax_type_id)->first();
+                    if ($taxType && (float) $taxType->default_rate > 0) {
+                        $taxAmount  = round($netAfterDisc * (float) $taxType->default_rate / 100, 2);
+                        $taxAccount = $taxType->sales_gl_account ?: null;
+                    }
+                }
+
+                $totalGrossSales += $grossAmount;
+                $totalDiscounts  += $discountAmount;
+                $totalTax        += $taxAmount;
+
+                // CR Sales Revenue (gross, before discount)
                 GldTransaction::create([
                     'trans_no'     => $delivery->id,
                     'type'         => StockMovement::TYPE_DELIVERY,
                     'tran_date'    => $tranDate,
-                    'account_code' => $item->cogs_account,
+                    'account_code' => $salesAccount,
                     'reference'    => $dnNo,
-                    'narration'    => "COGS — {$dnItem->description} ({$dnNo})",
-                    'amount'       => $cogsAmount,
+                    'narration'    => "Sales — {$dnItem->description} ({$dnNo})",
+                    'amount'       => -$grossAmount,
                     'created_by'   => $createdBy,
                     'dimension_id' => $dimId,
                     'dimension2_id'=> $dim2Id,
                 ]);
 
+                // CR Tax Payable
+                if ($taxAccount && $taxAmount != 0) {
+                    GldTransaction::create([
+                        'trans_no'     => $delivery->id,
+                        'type'         => StockMovement::TYPE_DELIVERY,
+                        'tran_date'    => $tranDate,
+                        'account_code' => $taxAccount,
+                        'reference'    => $dnNo,
+                        'narration'    => "Tax — {$dnItem->description} ({$dnNo})",
+                        'amount'       => -$taxAmount,
+                        'created_by'   => $createdBy,
+                        'dimension_id' => $dimId,
+                        'dimension2_id'=> $dim2Id,
+                    ]);
+                }
+
+                // DR Discount (contra-revenue — positive = debit)
+                if ($discountAmount != 0) {
+                    $discountGlCode = ($company->discount_gl_code ?? null)
+                        ?: ($glSetting->sales_discount_account ?? null)
+                        ?: 'SALES_DISCOUNT';
+                    GldTransaction::create([
+                        'trans_no'     => $delivery->id,
+                        'type'         => StockMovement::TYPE_DELIVERY,
+                        'tran_date'    => $tranDate,
+                        'account_code' => $discountGlCode,
+                        'reference'    => $dnNo,
+                        'narration'    => "Discount — {$dnItem->description} ({$dnNo})",
+                        'amount'       => $discountAmount,
+                        'created_by'   => $createdBy,
+                        'dimension_id' => $dimId,
+                        'dimension2_id'=> $dim2Id,
+                    ]);
+                }
+            }
+
+            // ── CR Shipping Income ────────────────────────────────────────────
+            $shippingCharge = (float) ($delivery->shipping_charge ?? 0);
+            if ($shippingCharge != 0) {
+                $shippingAccount = ($glSetting->shipping_charged_account ?: null) ?: 'SHIPPING_INCOME';
                 GldTransaction::create([
                     'trans_no'     => $delivery->id,
                     'type'         => StockMovement::TYPE_DELIVERY,
                     'tran_date'    => $tranDate,
-                    'account_code' => $item->inventory_account,
+                    'account_code' => $shippingAccount,
                     'reference'    => $dnNo,
-                    'narration'    => "Inventory out — {$dnItem->description} ({$dnNo})",
-                    'amount'       => -$cogsAmount,
+                    'narration'    => "Shipping — {$dnNo}",
+                    'amount'       => -$shippingCharge,
                     'created_by'   => $createdBy,
-                    'dimension_id' => $dimId,
-                    'dimension2_id'=> $dim2Id,
+                    'dimension_id' => $delivery->dimension_id,
+                    'dimension2_id'=> $delivery->dimension2_id,
                 ]);
             }
 
+            // ── DR Debtors (full amount_total) ────────────────────────────────
+            // Debtors = gross - discounts + tax + shipping
+            $debtorsAmount = round($totalGrossSales - $totalDiscounts + $totalTax + $shippingCharge, 2);
+            if ($debtorsAmount != 0) {
+                $debtorsGlCode = ($company->debtors_gl_code ?? null) ?: 'DEBTORS';
+                GldTransaction::create([
+                    'trans_no'     => $delivery->id,
+                    'type'         => StockMovement::TYPE_DELIVERY,
+                    'tran_date'    => $tranDate,
+                    'account_code' => $debtorsGlCode,
+                    'reference'    => $dnNo,
+                    'narration'    => "Debtors — {$dnNo}",
+                    'amount'       => round($debtorsAmount, 2),
+                    'created_by'   => $createdBy,
+                    'dimension_id' => $delivery->dimension_id,
+                    'dimension2_id'=> $delivery->dimension2_id,
+                ]);
+            }
+
+            broadcast(new DashboardEvent('delivery', 'placed', ['ref' => $delivery->delivery_no, 'amount' => $delivery->amount_total]));
             return ApiResponse::success($delivery, 'Sales delivery placed');
         });
     }
@@ -271,6 +402,7 @@ class SalesDeliveryController extends Controller
         }
 
         $delivery->update(['status' => 'cancelled']);
+        broadcast(new DashboardEvent('delivery', 'cancelled', ['ref' => $delivery->delivery_no]));
         return ApiResponse::success($delivery, 'Sales delivery cancelled');
     }
 
@@ -290,6 +422,11 @@ class SalesDeliveryController extends Controller
             'unit'          => 'nullable|string|max:20',
             'standard_cost' => 'nullable|numeric|min:0',
         ]);
+
+        $priceError = $this->checkSingleItemPrice($validated['stock_id'], (float) $validated['price']);
+        if ($priceError) {
+            return ApiResponse::validationError(['price' => $priceError]);
+        }
 
         $lineTotal = $this->calcLineTotal($validated);
 

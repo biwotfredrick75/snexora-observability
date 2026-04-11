@@ -9,6 +9,7 @@ use App\Models\MilkCollectionSession;
 use App\Models\InventoryLocation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Models\Farmer;
 
 class MilkRouteController extends Controller
 {
@@ -59,5 +60,19 @@ class MilkRouteController extends Controller
     {
         MilkRoute::findOrFail($id)->delete();
         return ApiResponse::deleted('Route deleted');
+    }
+
+    public function farmers(int $id): JsonResponse
+    {
+        $route   = MilkRoute::findOrFail($id);
+        $farmers = Farmer::where('route_id', $id)
+            ->where('status', '!=', 'inactive')
+            ->orderBy('full_name')
+            ->get(['id', 'farmer_no', 'full_name', 'short_name', 'phone', 'status']);
+
+        return ApiResponse::success(
+            ['route' => $route, 'farmers' => $farmers],
+            'Farmers for route retrieved'
+        );
     }
 }

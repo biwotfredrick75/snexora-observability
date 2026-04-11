@@ -22,19 +22,29 @@ class AuthService
     ) {}
 
     /**
-     * Authenticate user credentials.
+     * Authenticate user credentials by email (web login).
      */
-    public function authenticate(string $email, string $password): ?User
+    public function authenticateByEmail(string $email, string $password): ?User
     {
-         $user = $this->userRepository->findByEmail($email);
+        $user = $this->userRepository->findByEmail($email);
 
         if (!$user || !Hash::check($password, $user->password)) {
             return null;
         }
 
-        // if (!$user->is_active) {
-        //     return null;
-        // }
+        return $user;
+    }
+
+    /**
+     * Authenticate user credentials by loc_code (Flutter/grader login).
+     */
+    public function authenticate(string $locCode, string $password): ?User
+    {
+        $user = $this->userRepository->findByLocCode($locCode);
+
+        if (!$user || !Hash::check($password, $user->password)) {
+            return null;
+        }
 
         return $user;
     }

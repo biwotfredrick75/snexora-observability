@@ -127,6 +127,31 @@ class FarmerPaymentController extends Controller
 
         $farmerIds = $milkRows->pluck('farmer_id')->all();
 
+        // ── Advances paid to farmers this period ──────────────────────────────
+        $advancesMap = DB::table('farmer_payments')
+            ->whereIn('farmer_id', $farmerIds)
+            ->where('type', 'advance')
+            ->whereBetween('date_paid', [$startDate, $endDate])
+            ->selectRaw('farmer_id, SUM(amount_payment) AS advance_total')
+            ->groupBy('farmer_id')
+            ->pluck('advance_total', 'farmer_id');
+
+        // ── Direct invoices (goods sold to farmers) placed this period ────────
+        $invoicesMap = DB::table('farmer_direct_invoices')
+            ->whereIn('farmer_id', $farmerIds)
+            ->where('status', 'placed')
+            ->whereBetween('invoice_date', [$startDate, $endDate])
+            ->selectRaw('farmer_id, SUM(amount_total) AS invoice_total')
+            ->groupBy('farmer_id')
+            ->pluck('invoice_total', 'farmer_id');
+
+        // ── Carry-forward debt from previous period ───────────────────────────
+        $carryForwardMap = DB::table('farmer_carry_forwards')
+            ->whereIn('farmer_id', $farmerIds)
+            ->where('to_month', $month)
+            ->where('to_year', $year)
+            ->pluck('amount', 'farmer_id');
+
         // ── Checkoff entries for these farmers for the period ─────────────────
         $checkoffRows = DB::table('farmer_checkoff_entries as fce')
             ->leftJoin('checkoff_services as cs', 'cs.id', '=', 'fce.service_id')
@@ -158,12 +183,17 @@ class FarmerPaymentController extends Controller
             ];
         }
 
-        // ── Combine milk + deductions per farmer ──────────────────────────────
-        $farmers = $milkRows->map(function ($row) use ($services, $deductionMap) {
-            $fid          = $row->farmer_id;
-            $gross        = (float) $row->gross_amount;
-            $totalDeduct  = 0.0;
-            $deductions   = [];
+        // ── Combine milk + advances + deductions + invoices + carry-forward ─────
+        $farmers = $milkRows->map(function ($row) use (
+            $services, $deductionMap, $advancesMap, $invoicesMap, $carryForwardMap
+        ) {
+            $fid           = $row->farmer_id;
+            $gross         = (float) $row->gross_amount;
+            $advanceAmount = (float) ($advancesMap[$fid] ?? 0);
+            $invoiceAmount = (float) ($invoicesMap[$fid] ?? 0);
+            $carryForward  = (float) ($carryForwardMap[$fid] ?? 0);
+            $totalDeduct   = 0.0;
+            $deductions    = [];
 
             foreach ($services as $svc) {
                 $key    = $svc->id;
@@ -175,7 +205,9 @@ class FarmerPaymentController extends Controller
                 $totalDeduct += $amount;
             }
 
-            $net = $gross - $totalDeduct;
+            $net     = $gross - $advanceAmount - $totalDeduct - $invoiceAmount - $carryForward;
+            $deficit = $net < 0 ? round(abs($net), 4) : 0;
+            $net     = max(0, $net);
 
             return [
                 'farmer_id'            => $fid,
@@ -196,19 +228,27 @@ class FarmerPaymentController extends Controller
                 'avg_qty_per_delivery' => $row->delivery_count > 0
                     ? round((float) $row->total_qty / (int) $row->delivery_count, 2)
                     : 0,
+                'advance_amount'       => round($advanceAmount, 2),
+                'invoice_amount'       => round($invoiceAmount, 2),
+                'carry_forward'        => round($carryForward, 2),
                 'deductions'           => $deductions,
                 'total_deductions'     => round($totalDeduct, 4),
                 'net_payment'          => round($net, 4),
+                'deficit'              => $deficit, // will carry to next month if > 0
             ];
         });
 
         // ── Grand totals ──────────────────────────────────────────────────────
         $totals = [
-            'farmer_count'     => $farmers->count(),
-            'total_qty'        => round($farmers->sum('total_qty'), 3),
-            'gross_amount'     => round($farmers->sum('gross_amount'), 4),
-            'total_deductions' => round($farmers->sum('total_deductions'), 4),
-            'net_payment'      => round($farmers->sum('net_payment'), 4),
+            'farmer_count'      => $farmers->count(),
+            'total_qty'         => round($farmers->sum('total_qty'), 3),
+            'gross_amount'      => round($farmers->sum('gross_amount'), 4),
+            'total_advances'    => round($farmers->sum('advance_amount'), 2),
+            'total_invoices'    => round($farmers->sum('invoice_amount'), 2),
+            'total_carry_fwd'   => round($farmers->sum('carry_forward'), 2),
+            'total_deductions'  => round($farmers->sum('total_deductions'), 4),
+            'net_payment'       => round($farmers->sum('net_payment'), 4),
+            'total_deficit'     => round($farmers->sum('deficit'), 4),
         ];
 
         foreach ($services as $svc) {
@@ -276,8 +316,12 @@ class FarmerPaymentController extends Controller
             'farmer_count'     => 0,
             'total_qty'        => 0,
             'gross_amount'     => 0,
+            'total_advances'   => 0,
+            'total_invoices'   => 0,
+            'total_carry_fwd'  => 0,
             'total_deductions' => 0,
             'net_payment'      => 0,
+            'total_deficit'    => 0,
         ];
     }
 }

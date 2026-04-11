@@ -3,9 +3,9 @@
 // IMPORTANT: Delete this file after running!
 define('LARAVEL_START', microtime(true));
 
-require __DIR__ . '/../vendor/autoload.php';
+require __DIR__ . '/vendor/autoload.php';
 
-$app = require __DIR__ . '/../bootstrap/app.php';
+$app = require __DIR__ . '/bootstrap/app.php';
 $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
 
 echo '<pre>';

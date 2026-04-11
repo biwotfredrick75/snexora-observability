@@ -7,8 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class GlAccount extends Model
 {
 
-    protected $table = '0_chart_master';
-    protected $fillable = ['account_code', 'account_name', 'account_type', 'inactive'];
+    protected $fillable = ['code', 'code2', 'name', 'group_id', 'tags', 'inactive'];
 
     protected function casts(): array
     {

@@ -122,7 +122,12 @@ class ItemController extends Controller
             $query->where('inactive', $request->status);
         }
 
-        $perPage = min((int) $request->get('per_page', 30), 100);
+        // active=1 → inactive=0 (used by mobile sales screens)
+        if ($request->filled('active')) {
+            $query->where('inactive', $request->active == '1' ? 0 : 1);
+        }
+
+        $perPage = min((int) ($request->get('per_page') ?? $request->get('limit') ?? 30), 500);
         return ApiResponse::paginated($query->paginate($perPage), 'Items retrieved');
     }
 

@@ -1,7 +1,9 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Analytics\MilkForecastController;
 use App\Http\Controllers\Auth\AuthController;
+use App\Http\Controllers\Auth\GraderAuthController;
 use App\Http\Controllers\Auth\RolePermissionController;
 use App\Http\Controllers\Auth\PassportAuthController;
 use App\Http\Controllers\Auth\ProfileController;
@@ -34,6 +36,8 @@ use App\Http\Controllers\Setup\BackupController;
 use App\Http\Controllers\Setup\CompanyDatabaseController;
 use App\Http\Controllers\Setup\SystemDiagnosticsController;
 use App\Http\Controllers\Setup\DimensionController;
+use App\Http\Controllers\Setup\VehicleController;
+use App\Http\Controllers\Setup\DriverController;
 use App\Http\Controllers\Inventory\ItemCategoryController;
 use App\Http\Controllers\Inventory\ItemController;
 use App\Http\Controllers\Inventory\ItemSalesPriceController;
@@ -73,6 +77,11 @@ use App\Http\Controllers\Purchases\SupplierController;
 use App\Http\Controllers\Purchases\PurchaseRequisitionController;
 use App\Http\Controllers\Purchases\PurchaseOrderController;
 use App\Http\Controllers\Purchases\PurchaseQuotationController;
+use App\Http\Controllers\Purchases\SupplierCreditNoteController;
+use App\Http\Controllers\Purchases\SupplierAllocationController;
+use App\Http\Controllers\Purchases\SupplierImportController;
+use App\Http\Controllers\Purchases\SupplierPurchaseImportController;
+use App\Http\Controllers\Purchases\PaymentVoucherController;
 use App\Http\Controllers\Sales\CustomerController;
 use App\Http\Controllers\Sales\CustomerBranchController;
 use App\Http\Controllers\Sales\CustomerContactController;
@@ -102,6 +111,11 @@ use App\Http\Controllers\Farmers\FarmerPaymentController;
 use App\Http\Controllers\Farmers\FarmerPaymentProcessController;
 use App\Http\Controllers\Farmers\FarmerDirectInvoiceController;
 use App\Http\Controllers\Farmers\MilkLocationTransferController;
+use App\Http\Controllers\Farmers\FarmerSupplierPaymentController;
+use App\Http\Controllers\Farmers\SupplierListController;
+use App\Http\Controllers\Farmers\FarmerAdvanceReportController;
+use App\Http\Controllers\Farmers\GraderPayrollController;
+use App\Http\Controllers\Farmers\ImportServicesController;
 
 /**
  * Authentication Routes
@@ -117,6 +131,21 @@ use App\Http\Controllers\Farmers\MilkLocationTransferController;
 Route::prefix('auth')->group(function () {
     Route::post('login', [AuthController::class, 'login']);
     Route::post('register', [AuthController::class, 'register']);
+});
+
+// ==========================================
+// FLUTTER / MOBILE — Grader Authentication
+// Field workers (graders/milkmen) log in
+// using their loc_code instead of email.
+// ==========================================
+Route::prefix('grader')->group(function () {
+    Route::post('login', [GraderAuthController::class, 'login']);
+});
+
+Route::middleware('auth:api')->group(function () {
+    Route::prefix('grader')->group(function () {
+        Route::post('logout', [GraderAuthController::class, 'logout']);
+    });
 });
 
 // ==========================================
@@ -299,6 +328,18 @@ Route::middleware('auth:api')->group(function () {
         Route::post('dimensions',                [DimensionController::class, 'store']);
         Route::put('dimensions/{id}',            [DimensionController::class, 'update']);
         Route::delete('dimensions/{id}',         [DimensionController::class, 'destroy']);
+
+        // ── Vehicles ────────────────────────────────────────────────────────────
+        Route::get('vehicles',         [VehicleController::class, 'index']);
+        Route::post('vehicles',        [VehicleController::class, 'store']);
+        Route::put('vehicles/{id}',    [VehicleController::class, 'update']);
+        Route::delete('vehicles/{id}', [VehicleController::class, 'destroy']);
+
+        // ── Drivers ─────────────────────────────────────────────────────────────
+        Route::get('drivers',          [DriverController::class, 'index']);
+        Route::post('drivers',         [DriverController::class, 'store']);
+        Route::put('drivers/{id}',     [DriverController::class, 'update']);
+        Route::delete('drivers/{id}',  [DriverController::class, 'destroy']);
     });
 
     // ── Banking / GL ───────────────────────────────────────────────────────────
@@ -327,6 +368,16 @@ Route::middleware('auth:api')->group(function () {
         Route::post('gl-groups',           [GlAccountGroupController::class, 'store']);
         Route::put('gl-groups/{id}',       [GlAccountGroupController::class, 'update']);
         Route::delete('gl-groups/{id}',    [GlAccountGroupController::class, 'destroy']);
+
+        // ── Banking & GL Reports ───────────────────────────────────────────────
+        Route::prefix('reports')->group(function () {
+            Route::get('form-data',       [\App\Http\Controllers\Banking\BankingReportsController::class, 'formData']);
+            Route::get('trial-balance',   [\App\Http\Controllers\Banking\BankingReportsController::class, 'trialBalance']);
+            Route::get('profit-loss',     [\App\Http\Controllers\Banking\BankingReportsController::class, 'profitLoss']);
+            Route::get('balance-sheet',   [\App\Http\Controllers\Banking\BankingReportsController::class, 'balanceSheet']);
+            Route::get('gl-listing',      [\App\Http\Controllers\Banking\BankingReportsController::class, 'glListing']);
+            Route::get('journal-listing', [\App\Http\Controllers\Banking\BankingReportsController::class, 'journalListing']);
+        });
     });
 
     // ── Inventory ──────────────────────────────────────────────────────────────
@@ -523,11 +574,15 @@ Route::middleware('auth:api')->group(function () {
     // ── Purchases ─────────────────────────────────────────────────────────────
     Route::prefix('purchases')->group(function () {
         // Suppliers
-        Route::get('suppliers',          [SupplierController::class, 'index']);
-        Route::post('suppliers',         [SupplierController::class, 'store']);
-        Route::get('suppliers/{id}',     [SupplierController::class, 'show']);
-        Route::put('suppliers/{id}',     [SupplierController::class, 'update']);
-        Route::delete('suppliers/{id}',  [SupplierController::class, 'destroy']);
+        Route::get('suppliers',                         [SupplierController::class, 'index']);
+        Route::post('suppliers',                        [SupplierController::class, 'store']);
+        Route::get('suppliers/{id}',                    [SupplierController::class, 'show']);
+        Route::put('suppliers/{id}',                    [SupplierController::class, 'update']);
+        Route::delete('suppliers/{id}',                 [SupplierController::class, 'destroy']);
+        Route::post('suppliers/import/preview',                  [SupplierImportController::class, 'preview']);
+        Route::post('suppliers/import/confirm',                  [SupplierImportController::class, 'confirm']);
+        Route::post('suppliers/import-purchases/preview',        [SupplierPurchaseImportController::class, 'preview']);
+        Route::post('suppliers/import-purchases/confirm',        [SupplierPurchaseImportController::class, 'confirm']);
 
         // Purchase Requisitions
         Route::get('requisitions',                              [PurchaseRequisitionController::class, 'index']);
@@ -562,6 +617,31 @@ Route::middleware('auth:api')->group(function () {
         Route::post('orders/{id}/finance-approve',              [PurchaseOrderController::class, 'financeApprove']);
         Route::post('orders/{id}/ceo-approve',                  [PurchaseOrderController::class, 'ceoApprove']);
         Route::post('orders/{id}/reject',                       [PurchaseOrderController::class, 'reject']);
+
+        // Supplier Credit Notes
+        Route::get('supplier-credit-notes/form-data',           [SupplierCreditNoteController::class, 'formData']);
+        Route::get('supplier-credit-notes/received-items',      [SupplierCreditNoteController::class, 'receivedItems']);
+        Route::get('supplier-credit-notes',                     [SupplierCreditNoteController::class, 'index']);
+        Route::post('supplier-credit-notes',                    [SupplierCreditNoteController::class, 'store']);
+        Route::get('supplier-credit-notes/{id}',                [SupplierCreditNoteController::class, 'show']);
+
+        // Supplier Allocations
+        Route::get('supplier-allocations',                      [SupplierAllocationController::class, 'index']);
+        Route::get('supplier-allocation-inquiry',               [SupplierAllocationController::class, 'inquiry']);
+        Route::get('supplier-transaction-inquiry',              [SupplierAllocationController::class, 'transactionInquiry']);
+
+        // Payment Vouchers
+        Route::get('payment-vouchers/form-data',          [PaymentVoucherController::class, 'formData']);
+        Route::get('payment-vouchers/open-transactions',  [PaymentVoucherController::class, 'openTransactions']);
+        Route::get('payment-vouchers/approved',           [PaymentVoucherController::class, 'approvedVouchers']);
+        Route::get('payment-vouchers',                    [PaymentVoucherController::class, 'index']);
+        Route::post('payment-vouchers',                   [PaymentVoucherController::class, 'store']);
+        Route::get('payment-vouchers/{id}',               [PaymentVoucherController::class, 'show']);
+        Route::get('payment-vouchers/{id}/gl-transactions',  [PaymentVoucherController::class, 'glTransactions']);
+        Route::post('payment-vouchers/{id}/payables-approve', [PaymentVoucherController::class, 'payablesApprove']);
+        Route::post('payment-vouchers/{id}/finance-approve',  [PaymentVoucherController::class, 'financeApprove']);
+        Route::post('payment-vouchers/{id}/ceo-approve',      [PaymentVoucherController::class, 'ceoApprove']);
+        Route::post('payment-vouchers/{id}/post',             [PaymentVoucherController::class, 'post']);
     });
 
     // ── Sales Transactions ─────────────────────────────────────────────────
@@ -636,9 +716,33 @@ Route::middleware('auth:api')->group(function () {
     Route::get('sales/invoices/{id}/gl-entries',         [SalesInvoiceController::class, 'glEntries']);
     Route::get('sales/invoices/{id}/allocations',        [SalesInvoiceController::class, 'allocations']);
     Route::post('sales/invoices/{id}/apply-payments',    [SalesInvoiceController::class, 'applyPayments']);
+    Route::get('sales/invoices/{id}/returnable-items',   [SalesInvoiceController::class, 'returnableItems']);
 
     // Reports
     Route::get('sales/reports/quantity-comparison', \App\Http\Controllers\Sales\SalesQuantityComparisonController::class);
+    Route::get('sales/reports/product-sales/form-data', [\App\Http\Controllers\Sales\ProductSalesReportController::class, 'formData']);
+    Route::get('sales/reports/product-sales',           [\App\Http\Controllers\Sales\ProductSalesReportController::class, 'index']);
+    Route::get('sales/reports/product-sales/export',    [\App\Http\Controllers\Sales\ProductSalesReportController::class, 'exportExcel']);
+
+    // Sales module reports
+    Route::prefix('sales/reports')->group(function () {
+        Route::get('form-data',              [\App\Http\Controllers\Sales\SalesReportsController::class, 'formData']);
+        Route::get('sales-summary',          [\App\Http\Controllers\Sales\SalesReportsController::class, 'salesSummary']);
+        Route::get('sales-by-customer',      [\App\Http\Controllers\Sales\SalesReportsController::class, 'salesByCustomer']);
+        Route::get('sales-by-item',          [\App\Http\Controllers\Sales\SalesReportsController::class, 'salesByItem']);
+        Route::get('sales-by-salesperson',   [\App\Http\Controllers\Sales\SalesReportsController::class, 'salesBySalesperson']);
+        Route::get('sales-by-area',          [\App\Http\Controllers\Sales\SalesReportsController::class, 'salesByArea']);
+        Route::get('customer-aged-analysis', [\App\Http\Controllers\Sales\SalesReportsController::class, 'customerAgedAnalysis']);
+        Route::get('customer-statement',     [\App\Http\Controllers\Sales\SalesReportsController::class, 'customerStatement']);
+        Route::get('outstanding-invoices',   [\App\Http\Controllers\Sales\SalesReportsController::class, 'outstandingInvoices']);
+        Route::get('price-list',             [\App\Http\Controllers\Sales\SalesReportsController::class, 'priceList']);
+        Route::get('delivery-status',        [\App\Http\Controllers\Sales\SalesReportsController::class, 'deliveryStatus']);
+        Route::get('credit-notes-report',    [\App\Http\Controllers\Sales\SalesReportsController::class, 'creditNotes']);
+        Route::get('top-customers',          [\App\Http\Controllers\Sales\SalesReportsController::class, 'topCustomers']);
+        Route::get('sales-variance',         [\App\Http\Controllers\Sales\SalesReportsController::class, 'salesVariance']);
+        Route::get('recurring-invoice',      [\App\Http\Controllers\Sales\SalesReportsController::class, 'recurringInvoiceSummary']);
+        Route::get('export',                 [\App\Http\Controllers\Sales\SalesReportsController::class, 'export']);
+    });
 
     // Credit Notes
     Route::get('sales/credit-notes',                           [CreditNoteController::class, 'index']);
@@ -671,6 +775,12 @@ Route::middleware('auth:api')->group(function () {
     Route::get('sales/dashboard/store-items',              [SalesDashboardController::class, 'storeItems']);
     Route::get('sales/dashboard/milk-traceability',        [SalesDashboardController::class, 'milkTraceability']);
     Route::get('sales/dashboard/grader-collections',       [SalesDashboardController::class, 'graderCollections']);
+    Route::get('sales/dashboard/grader-detail',            [SalesDashboardController::class, 'graderDetail']);
+
+    // ── Milk Analytics / Forecast ────────────────────────────────────────────
+    Route::get('analytics/milk/forecast',  [MilkForecastController::class, 'forecast']);
+    Route::get('analytics/milk/insights',  [MilkForecastController::class, 'insights']);
+    Route::post('analytics/milk/advice',   [MilkForecastController::class, 'advice']);
     Route::get('sales/mpesa/tills',                       [MpesaController::class, 'tills']);
     Route::get('sales/mpesa/status',                      [MpesaController::class, 'checkStatus']);
     Route::get('sales/mpesa',                             [MpesaController::class, 'index']);
@@ -715,6 +825,7 @@ Route::middleware('auth:api')->group(function () {
 
         Route::get('routes',                    [MilkRouteController::class, 'index']);
         Route::post('routes',                   [MilkRouteController::class, 'store']);
+        Route::get('routes/{id}/farmers',       [MilkRouteController::class, 'farmers']);
         Route::put('routes/{id}',               [MilkRouteController::class, 'update']);
         Route::delete('routes/{id}',            [MilkRouteController::class, 'destroy']);
 
@@ -815,6 +926,29 @@ Route::middleware('auth:api')->group(function () {
         Route::get('milk-location-transfers',                    [MilkLocationTransferController::class, 'index']);
         Route::post('milk-location-transfers',                   [MilkLocationTransferController::class, 'store']);
 
+        // Farmer Supplier Payments
+        Route::get('supplier-payments/form-data',    [FarmerSupplierPaymentController::class, 'formData']);
+        Route::get('supplier-payments/advance-limit',[FarmerSupplierPaymentController::class, 'advanceLimit']);
+        Route::get('supplier-payments',              [FarmerSupplierPaymentController::class, 'index']);
+        Route::post('supplier-payments',             [FarmerSupplierPaymentController::class, 'store']);
+
+        // Supplier List Report
+        Route::get('supplier-list',                [SupplierListController::class, 'index']);
+
+        // Farmer Advance Report
+        Route::get('advance-report/form-data',     [FarmerAdvanceReportController::class, 'formData']);
+        Route::get('advance-report',               [FarmerAdvanceReportController::class, 'index']);
+
+        // Grader Payroll
+        Route::get('grader-payroll/form-data',   [GraderPayrollController::class, 'formData']);
+        Route::post('grader-payroll/process',    [GraderPayrollController::class, 'process']);
+        Route::post('grader-payroll/advances',   [GraderPayrollController::class, 'storeAdvance']);
+        Route::post('grader-payroll/rates',      [GraderPayrollController::class, 'saveRate']);
+
+        // Import Services
+        Route::get('import-services/form-data',    [ImportServicesController::class, 'formData']);
+        Route::post('import-services/import',      [ImportServicesController::class, 'import']);
+
         // Direct Farmer Invoices
         Route::get('direct-invoices/form-data',          [FarmerDirectInvoiceController::class, 'formData']);
         Route::post('direct-invoices/reserve-reference', [FarmerDirectInvoiceController::class, 'reserveReference']);
@@ -869,5 +1003,12 @@ Route::middleware('auth:api')->group(function () {
         Route::post('production-plans/{id}/execute',                        [\App\Http\Controllers\Manufacturing\ProductionPlanController::class, 'execute']);
         Route::get('production-plans/{id}/execute-detail',                  [\App\Http\Controllers\Manufacturing\ProductionPlanController::class, 'executeDetail']);
         Route::post('production-plans/{id}/items/{itemId}/create-wo',       [\App\Http\Controllers\Manufacturing\ProductionPlanController::class, 'createItemWorkOrder']);
+    });
+
+    // ── Blockchain ────────────────────────────────────────────────────────────
+    Route::prefix('blockchain')->group(function () {
+        Route::get('anchor',    [\App\Http\Controllers\Blockchain\BlockchainController::class, 'getAnchor']);
+        Route::post('verify',   [\App\Http\Controllers\Blockchain\BlockchainController::class, 'verify']);
+        Route::get('history',   [\App\Http\Controllers\Blockchain\BlockchainController::class, 'history']);
     });
 });

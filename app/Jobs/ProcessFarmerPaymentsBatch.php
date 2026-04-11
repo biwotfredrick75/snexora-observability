@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\FarmerPaymentBatch;
+use App\Services\Blockchain\BlockchainService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -95,11 +96,16 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
             return;
         }
 
-        $processed   = 0;
-        $totalGross  = 0;
-        $totalDeduct = 0;
-        $totalNet    = 0;
-        $chunkSize   = 50;
+        // ── Compute next period for carry-forward writes ──────────────────────
+        $nextMonth = $batch->month == 12 ? 1  : $batch->month + 1;
+        $nextYear  = $batch->month == 12 ? $batch->year + 1 : $batch->year;
+
+        $processed      = 0;
+        $totalGross     = 0;
+        $totalAdvances  = 0;
+        $totalDeduct    = 0;
+        $totalNet       = 0;
+        $chunkSize      = 50;
 
         // Track all trans_nos posted so far — used for full rollback on any failure
         $postedTransNos = [];
@@ -123,10 +129,38 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
                 ->get()
                 ->groupBy('farmer_id');
 
+            // Advances paid to farmers this period (weekly/biweekly payments with type=advance)
+            $advancesMap = DB::table('farmer_payments')
+                ->whereIn('farmer_id', $chunk)
+                ->where('type', 'advance')
+                ->whereBetween('date_paid', [$startDate, $endDate])
+                ->selectRaw('farmer_id, SUM(amount_payment) AS advance_total')
+                ->groupBy('farmer_id')
+                ->pluck('advance_total', 'farmer_id');
+
+            // Direct invoices placed to farmers this period
+            $invoicesMap = DB::table('farmer_direct_invoices')
+                ->whereIn('farmer_id', $chunk)
+                ->where('status', 'placed')
+                ->whereBetween('invoice_date', [$startDate, $endDate])
+                ->selectRaw('farmer_id, SUM(amount_total) AS invoice_total')
+                ->groupBy('farmer_id')
+                ->pluck('invoice_total', 'farmer_id');
+
+            // Carry-forward debt from previous period
+            $carryForwardMap = DB::table('farmer_carry_forwards')
+                ->whereIn('farmer_id', $chunk)
+                ->where('to_month', $batch->month)
+                ->where('to_year', $batch->year)
+                ->pluck('amount', 'farmer_id');
+
             foreach ($chunk as $farmerId) {
-                $grossAmount = (float) ($milkData[$farmerId] ?? 0);
+                $grossAmount  = (float) ($milkData[$farmerId] ?? 0);
                 if ($grossAmount <= 0) { $processed++; continue; }
 
+                $advanceAmount    = (float) ($advancesMap[$farmerId] ?? 0);
+                $invoiceAmount    = (float) ($invoicesMap[$farmerId] ?? 0);
+                $carryFwdAmount   = (float) ($carryForwardMap[$farmerId] ?? 0);
                 $farmerDeductions = $deductions->get($farmerId, collect());
                 $deductMap = [];
                 $totalDed  = 0;
@@ -136,32 +170,56 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
                     $deductMap[$svc->id] = ['amount' => $amount, 'gl_account' => $svc->gl_account ?? null];
                     $totalDed += $amount;
                 }
-                $netPayment = max(0, $grossAmount - $totalDed);
+
+                $rawNet     = $grossAmount - $advanceAmount - $totalDed - $invoiceAmount - $carryFwdAmount;
+                $deficit    = $rawNet < 0 ? round(abs($rawNet), 4) : 0.0;
+                $netPayment = max(0.0, $rawNet);
 
                 // ── Attempt GL posting — any failure rolls back the entire batch ──
                 try {
                     $transNo = null;
                     DB::transaction(function () use (
-                        $farmerId, $grossAmount, $netPayment, $totalDed,
+                        $farmerId, $grossAmount, $advanceAmount, $invoiceAmount, $carryFwdAmount,
+                        $netPayment, $deficit, $totalDed,
                         $deductMap, $batch, $datePaid,
-                        $farmersPayableAcc, $bankAcc, &$transNo
+                        $farmersPayableAcc, $bankAcc,
+                        $nextMonth, $nextYear,
+                        &$transNo
                     ) {
                         $transNo = $this->nextTransNo();
                         $ref  = $batch->reference . '-F' . $farmerId;
                         $narr = 'Farmer payment ' . $batch->reference . ' | '
                               . date('M', mktime(0, 0, 0, $batch->month, 1)) . ' ' . $batch->year;
 
-                        // DR Farmers Payable Control
+                        // DR Farmers Payable Control (full gross milk value)
                         $this->glPost($transNo, $datePaid, $farmersPayableAcc,
                                       $grossAmount, $ref, $narr, $batch->created_by ?? '');
 
-                        // CR Bank — net cash out
+                        // CR Bank — advances already disbursed earlier in the period
+                        if ($advanceAmount > 0) {
+                            $this->glPost($transNo, $datePaid, $bankAcc,
+                                          -$advanceAmount, $ref, $narr . ' [advance recovery]', $batch->created_by ?? '');
+                        }
+
+                        // CR Bank — direct invoice recovery
+                        if ($invoiceAmount > 0) {
+                            $this->glPost($transNo, $datePaid, $bankAcc,
+                                          -$invoiceAmount, $ref, $narr . ' [invoice recovery]', $batch->created_by ?? '');
+                        }
+
+                        // CR Bank — carry-forward debt recovery
+                        if ($carryFwdAmount > 0) {
+                            $this->glPost($transNo, $datePaid, $bankAcc,
+                                          -$carryFwdAmount, $ref, $narr . ' [carry-fwd recovery]', $batch->created_by ?? '');
+                        }
+
+                        // CR Bank — remaining net cash out at payroll
                         if ($netPayment > 0) {
                             $this->glPost($transNo, $datePaid, $bankAcc,
                                           -$netPayment, $ref, $narr, $batch->created_by ?? '');
                         }
 
-                        // CR each deduction account
+                        // CR each checkoff deduction account
                         foreach ($deductMap as $ded) {
                             if ($ded['amount'] > 0 && !empty($ded['gl_account'])) {
                                 $this->glPost($transNo, $datePaid, $ded['gl_account'],
@@ -177,12 +235,41 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
                             $this->glPost($transNo, $datePaid, $bankAcc,
                                           -$unallocated, $ref, $narr . ' [misc deduct]', $batch->created_by ?? '');
                         }
+
+                        // ── Write/update carry-forward for next period if deficit ──
+                        if ($deficit > 0) {
+                            DB::table('farmer_carry_forwards')->upsert(
+                                [[
+                                    'farmer_id'     => $farmerId,
+                                    'to_month'      => $nextMonth,
+                                    'to_year'       => $nextYear,
+                                    'amount'        => $deficit,
+                                    'notes'         => 'Auto from batch ' . $batch->reference,
+                                    'from_batch_id' => $batch->id,
+                                    'created_by'    => $batch->created_by ?? 'system',
+                                    'created_at'    => now(),
+                                    'updated_at'    => now(),
+                                ]],
+                                ['farmer_id', 'to_month', 'to_year'],
+                                ['amount', 'notes', 'from_batch_id', 'updated_at']
+                            );
+                        } else {
+                            // Clear any previously written carry-forward for next period
+                            // (re-run scenario: if deficit was fixed, remove the record)
+                            DB::table('farmer_carry_forwards')
+                                ->where('farmer_id', $farmerId)
+                                ->where('to_month', $nextMonth)
+                                ->where('to_year', $nextYear)
+                                ->where('from_batch_id', $batch->id)
+                                ->delete();
+                        }
                     });
 
                     $postedTransNos[] = $transNo;
-                    $totalGross  += $grossAmount;
-                    $totalDeduct += $totalDed;
-                    $totalNet    += $netPayment;
+                    $totalGross    += $grossAmount;
+                    $totalAdvances += $advanceAmount;
+                    $totalDeduct   += $totalDed;
+                    $totalNet      += $netPayment;
                     $processed++;
 
                 } catch (\Throwable $e) {
@@ -193,6 +280,7 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
                         'processed_count'  => 0,
                         'failed_count'     => 1,
                         'total_gross'      => 0,
+                        'total_advances'   => 0,
                         'total_deductions' => 0,
                         'total_net'        => 0,
                     ]);
@@ -209,6 +297,7 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
                 'processed_count'  => $processed,
                 'failed_count'     => 0,
                 'total_gross'      => $totalGross,
+                'total_advances'   => $totalAdvances,
                 'total_deductions' => $totalDeduct,
                 'total_net'        => $totalNet,
             ]);
@@ -218,6 +307,23 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
             'status'       => 'done',
             'completed_at' => now(),
         ]);
+
+        // ── Anchor the completed batch on-chain (fire-and-forget) ────────────
+        try {
+            $period = sprintf('%04d-%02d', $batch->year, $batch->month);
+            (new BlockchainService())->anchorFarmerPaymentBatch(
+                batchId:        $batch->id,
+                reference:      $batch->reference,
+                period:         $period,
+                totalGross:     (float) $batch->total_gross,
+                totalDeductions:(float) $batch->total_deductions,
+                totalNet:       (float) $batch->total_net,
+                farmerCount:    (int)   $batch->total_farmers,
+                preparedBy:     $batch->created_by ?? 'system',
+            );
+        } catch (\Throwable $e) {
+            Log::error("FarmerPaymentBatch #{$this->batchId}: blockchain anchor failed: " . $e->getMessage());
+        }
     }
 
     // ── Delete all GL entries posted under the given trans_nos ───────────────

@@ -10,7 +10,8 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 class SalesInvoice extends Model
 {
     protected $fillable = [
-        'inv_no', 'dn_id', 'so_id', 'debtor_no', 'branch_id', 'invoice_date', 'due_date',
+        'inv_no', 'dn_id', 'so_id', 'debtor_no', 'customer_name', 'pos_trans_id',
+        'branch_id', 'invoice_date', 'due_date',
         'payment_terms', 'price_list_id', 'shipping_charge', 'sub_total',
         'amount_total', 'status', 'dimension_id', 'dimension2_id',
         'location_id', 'vehicle', 'shift', 'deliver_to', 'address',

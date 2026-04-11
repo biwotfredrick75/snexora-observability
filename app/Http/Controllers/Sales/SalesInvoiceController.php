@@ -14,10 +14,12 @@ use App\Models\SalesInvoiceItem;
 use App\Models\StockMovement;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Traits\ValidatesSellingPrice;
 use Illuminate\Support\Facades\DB;
 
 class SalesInvoiceController extends Controller
 {
+    use ValidatesSellingPrice;
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private function recalcTotals(SalesInvoice $invoice): void
@@ -110,6 +112,11 @@ class SalesInvoiceController extends Controller
             'items.*.unit'         => 'nullable|string|max:20',
             'items.*.standard_cost'=> 'nullable|numeric|min:0',
         ]);
+
+        $priceErrors = $this->checkItemPrices($validated['items']);
+        if (! empty($priceErrors)) {
+            return ApiResponse::validationError($priceErrors);
+        }
 
         return DB::transaction(function () use ($validated) {
             $invoice = SalesInvoice::create([
@@ -300,6 +307,8 @@ class SalesInvoiceController extends Controller
                 : null;
 
             $totalGrossSales = 0.0;
+            $totalDiscounts  = 0.0;
+            $totalTax        = 0.0;
 
             foreach ($invoice->items as $invoiceItem) {
                 $qty          = (float) $invoiceItem->qty;
@@ -372,9 +381,14 @@ class SalesInvoiceController extends Controller
                 }
 
                 // ── Revenue: Sales / Tax / Discount ───────────────────────────
-                if ($item && $item->sales_account) {
-                    $grossAmount    = round($qty * $invoiceItem->price, 4);
-                    $discountAmount = round($grossAmount * ($invoiceItem->discount_pct / 100), 4);
+                if ($item) {
+                    $salesAccount   = ($item->sales_account ?: null)
+                        ?: ($glSetting->items_sales_account ?: null)
+                        ?: ($glSetting->sales_account ?: null)
+                        ?: 'SALES_REVENUE';
+
+                    $grossAmount    = round($qty * $invoiceItem->price, 2);
+                    $discountAmount = round($grossAmount * ($invoiceItem->discount_pct / 100), 2);
                     $netAfterDisc   = $grossAmount - $discountAmount;
 
                     $taxAmount  = 0.0;
@@ -382,24 +396,24 @@ class SalesInvoiceController extends Controller
                     if ($item->tax_type_id) {
                         $taxType = DB::table('tax_types')->where('id', $item->tax_type_id)->first();
                         if ($taxType && (float) $taxType->default_rate > 0) {
-                            $taxAmount  = round($netAfterDisc * (float) $taxType->default_rate / 100, 4);
+                            $taxAmount  = round($netAfterDisc * (float) $taxType->default_rate / 100, 2);
                             $taxAccount = $taxType->sales_gl_account ?: null;
                         }
                     }
 
-                    $netRevenue = $netAfterDisc - $taxAmount;
-
                     $totalGrossSales += $grossAmount;
+                    $totalDiscounts  += $discountAmount;
+                    $totalTax        += $taxAmount;
 
-                    // CR Sales Revenue
+                    // CR Sales Revenue (gross, before discount)
                     GldTransaction::create([
                         'trans_no'     => $invoice->id,
                         'type'         => StockMovement::TYPE_INVOICE,
                         'tran_date'    => $tranDate,
-                        'account_code' => $item->sales_account,
+                        'account_code' => $salesAccount,
                         'reference'    => $invNo,
                         'narration'    => "Sales — {$invoiceItem->description} ({$invNo})",
-                        'amount'       => -$netRevenue,
+                        'amount'       => -$grossAmount,
                         'created_by'   => $createdBy,
                         'dimension_id' => $dimId,
                         'dimension2_id'=> $dim2Id,
@@ -421,11 +435,11 @@ class SalesInvoiceController extends Controller
                         ]);
                     }
 
-                    // CR Discount (deduction from gross)
+                    // DR Discount (contra-revenue — positive = debit)
                     if ($discountAmount != 0) {
                         $discountGlCode = ($company->discount_gl_code ?? null)
                             ?: ($glSetting->sales_discount_account ?? null)
-                            ?: 'DISCOUNT';
+                            ?: 'SALES_DISCOUNT';
                         GldTransaction::create([
                             'trans_no'     => $invoice->id,
                             'type'         => StockMovement::TYPE_INVOICE,
@@ -433,7 +447,7 @@ class SalesInvoiceController extends Controller
                             'account_code' => $discountGlCode,
                             'reference'    => $invNo,
                             'narration'    => "Discount — {$invoiceItem->description} ({$invNo})",
-                            'amount'       => -$discountAmount,
+                            'amount'       => $discountAmount,
                             'created_by'   => $createdBy,
                             'dimension_id' => $dimId,
                             'dimension2_id'=> $dim2Id,
@@ -442,8 +456,28 @@ class SalesInvoiceController extends Controller
                 }
             }
 
-            // ── Single DR Debtors ─────────────────────────────────────────────
-            if ($totalGrossSales != 0) {
+            // ── CR Shipping Income ────────────────────────────────────────────
+            $shippingCharge = (float) ($invoice->shipping_charge ?? 0);
+            if ($shippingCharge != 0) {
+                $shippingAccount = ($glSetting->shipping_charged_account ?: null) ?: 'SHIPPING_INCOME';
+                GldTransaction::create([
+                    'trans_no'     => $invoice->id,
+                    'type'         => StockMovement::TYPE_INVOICE,
+                    'tran_date'    => $tranDate,
+                    'account_code' => $shippingAccount,
+                    'reference'    => $invNo,
+                    'narration'    => "Shipping — {$invNo}",
+                    'amount'       => -$shippingCharge,
+                    'created_by'   => $createdBy,
+                    'dimension_id' => $invoice->dimension_id,
+                    'dimension2_id'=> $invoice->dimension2_id,
+                ]);
+            }
+
+            // ── DR Debtors = gross - discounts + tax + shipping ───────────────
+            // (tax increases what customer owes; discount reduces it)
+            $debtorsAmount = round($totalGrossSales - $totalDiscounts + $totalTax + $shippingCharge, 2);
+            if ($debtorsAmount != 0) {
                 $debtorsGlCode = ($company->debtors_gl_code ?? null) ?: 'DEBTORS';
                 GldTransaction::create([
                     'trans_no'     => $invoice->id,
@@ -452,7 +486,7 @@ class SalesInvoiceController extends Controller
                     'account_code' => $debtorsGlCode,
                     'reference'    => $invNo,
                     'narration'    => "Debtors — {$invNo}",
-                    'amount'       => round($totalGrossSales, 2),
+                    'amount'       => round($debtorsAmount, 2),
                     'created_by'   => $createdBy,
                     'dimension_id' => $invoice->dimension_id,
                     'dimension2_id'=> $invoice->dimension2_id,
@@ -499,6 +533,11 @@ class SalesInvoiceController extends Controller
             'unit'          => 'nullable|string|max:20',
             'standard_cost' => 'nullable|numeric|min:0',
         ]);
+
+        $priceError = $this->checkSingleItemPrice($validated['stock_id'], (float) $validated['price']);
+        if ($priceError) {
+            return ApiResponse::validationError(['price' => $priceError]);
+        }
 
         $lineTotal = $this->calcLineTotal($validated);
 
@@ -610,5 +649,55 @@ class SalesInvoiceController extends Controller
             'total_debit'  => round($totalDebit, 2),
             'total_credit' => round($totalCredit, 2),
         ], 'GL entries retrieved');
+    }
+
+    /**
+     * Return the returnable items for a placed invoice.
+     * Calculates remaining returnable qty = original qty − already returned via credit notes.
+     */
+    public function returnableItems(int $id): JsonResponse
+    {
+        $invoice = SalesInvoice::with(['items', 'customer:debtor_no,name'])->find($id);
+        if (! $invoice) return ApiResponse::notFound('Invoice not found');
+
+        $items = $invoice->items->map(function ($item) use ($id) {
+            $alreadyReturned = \App\Models\CreditNoteItem::whereHas('creditNote', function ($q) use ($id) {
+                    $q->where('inv_id', $id)->where('cn_type', 'return')->whereIn('status', ['placed']);
+                })
+                ->where('stock_id', $item->stock_id)
+                ->sum('qty');
+
+            $originalQty    = (float) $item->qty + (float) $alreadyReturned; // qty on invoice already decremented on place
+            $returnableQty  = max(0, (float) $item->qty);
+
+            $standardCost = (float) (DB::table('items')
+                ->where('stock_id', $item->stock_id)
+                ->selectRaw('COALESCE(material_cost,0)+COALESCE(labour_cost,0)+COALESCE(overhead_cost,0) as c')
+                ->value('c') ?? 0);
+
+            return [
+                'stock_id'      => $item->stock_id,
+                'description'   => $item->description,
+                'qty'           => (float) $item->qty,
+                'returnable_qty'=> $returnableQty,
+                'already_returned' => (float) $alreadyReturned,
+                'unit'          => $item->unit,
+                'price'         => (float) $item->price,
+                'discount_pct'  => (float) ($item->discount_pct ?? 0),
+                'standard_cost' => $standardCost,
+            ];
+        })->filter(fn($i) => $i['returnable_qty'] > 0)->values();
+
+        return ApiResponse::success([
+            'invoice' => [
+                'id'            => $invoice->id,
+                'inv_no'        => $invoice->inv_no,
+                'invoice_date'  => $invoice->invoice_date,
+                'debtor_no'     => $invoice->debtor_no,
+                'customer_name' => $invoice->customer?->name,
+                'location_id'   => $invoice->location_id,
+            ],
+            'items' => $items,
+        ], 'Returnable items retrieved');
     }
 }

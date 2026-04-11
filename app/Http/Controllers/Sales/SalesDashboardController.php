@@ -480,4 +480,91 @@ class SalesDashboardController extends Controller
             ],
         ], 'Grader collections loaded');
     }
+
+    public function graderDetail(Request $request): JsonResponse
+    {
+        $graderCode = $request->get('grader_code', '');
+        $from       = $request->get('date_from', now()->startOfMonth()->toDateString());
+        $to         = $request->get('date_to',   now()->toDateString());
+
+        // ── Farmers collected for this grader ───────────────────────────────
+        $farmers = DB::table('milk_grader_collections as gc')
+            ->join('milk_purchases as mp',       'mp.id',  '=', 'gc.purchase_id')
+            ->join('milk_purchase_items as mpi', 'mpi.purchase_id', '=', 'mp.id')
+            ->leftJoin('farmers as f',           'f.id',   '=', 'mpi.farmer_id')
+            ->where('gc.location', $graderCode)
+            ->whereBetween('gc.date_collected', [$from, $to])
+            ->groupBy('f.id', 'f.farmer_no', 'f.full_name', 'f.phone')
+            ->selectRaw('
+                COALESCE(f.farmer_no,   "Unknown") AS farmer_no,
+                COALESCE(f.full_name,   "Unknown") AS farmer_name,
+                COALESCE(f.phone,       "")        AS phone,
+                SUM(mpi.quantity)                  AS total_qty,
+                SUM(mpi.total_price)               AS total_amount,
+                AVG(mpi.unit_price)                AS avg_rate,
+                COUNT(DISTINCT gc.date_collected)  AS sessions,
+                MAX(gc.date_collected)             AS last_collection
+            ')
+            ->orderByDesc('total_qty')
+            ->get();
+
+        $grandQty = $farmers->sum('total_qty');
+
+        $farmers = $farmers->map(fn($r) => [
+            'farmer_no'       => $r->farmer_no,
+            'farmer_name'     => $r->farmer_name,
+            'phone'           => $r->phone,
+            'total_qty'       => round((float) $r->total_qty, 1),
+            'total_amount'    => round((float) $r->total_amount, 2),
+            'avg_rate'        => round((float) $r->avg_rate, 2),
+            'sessions'        => (int) $r->sessions,
+            'last_collection' => $r->last_collection,
+            'pct'             => $grandQty > 0 ? round($r->total_qty / $grandQty * 100, 1) : 0,
+        ]);
+
+        // ── Daily breakdown ─────────────────────────────────────────────────
+        $daily = DB::table('milk_grader_collections as gc')
+            ->where('gc.location', $graderCode)
+            ->whereBetween('gc.date_collected', [$from, $to])
+            ->groupBy('gc.date_collected')
+            ->selectRaw('
+                gc.date_collected AS date,
+                SUM(gc.quantity)  AS qty,
+                AVG(gc.rate)      AS avg_rate,
+                COUNT(*)          AS entries
+            ')
+            ->orderBy('gc.date_collected')
+            ->get()
+            ->map(fn($r) => [
+                'date'     => $r->date,
+                'qty'      => round((float) $r->qty, 1),
+                'avg_rate' => round((float) $r->avg_rate, 2),
+                'entries'  => (int) $r->entries,
+            ]);
+
+        // ── Summary ─────────────────────────────────────────────────────────
+        $totalQty    = $farmers->sum('total_qty');
+        $totalAmount = $farmers->sum('total_amount');
+        $avgRate     = $totalQty > 0 ? round($totalAmount / $totalQty, 2) : 0;
+        $topFarmer   = $farmers->first();
+
+        return ApiResponse::success([
+            'period'  => ['from' => $from, 'to' => $to],
+            'summary' => [
+                'grader_code'    => $graderCode,
+                'total_qty'      => $totalQty,
+                'total_amount'   => $totalAmount,
+                'avg_rate'       => $avgRate,
+                'unique_farmers' => $farmers->count(),
+                'sessions'       => $daily->count(),
+            ],
+            'farmers' => $farmers->values(),
+            'daily'   => $daily->values(),
+            'top_farmer' => $topFarmer ? [
+                'name' => $topFarmer['farmer_name'],
+                'qty'  => $topFarmer['total_qty'],
+                'pct'  => $topFarmer['pct'],
+            ] : null,
+        ], 'Grader detail loaded');
+    }
 }

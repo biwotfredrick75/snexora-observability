@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Inventory;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\InventoryTransfer;
@@ -70,6 +71,7 @@ class InventoryTransferController extends Controller
             }
         });
 
+        broadcast(new DashboardEvent('transfer', 'created', ['ref' => $transfer->reference]));
         return ApiResponse::created($transfer->load('items.item'), 'Transfer created');
     }
 
@@ -117,6 +119,7 @@ class InventoryTransferController extends Controller
             return ApiResponse::error('Transfer is not in draft status', 422);
         }
         $transfer->update(['status' => 'pending']);
+        broadcast(new DashboardEvent('transfer', 'submitted', ['ref' => $transfer->reference]));
         return ApiResponse::updated($transfer->fresh(), 'Transfer submitted for approval');
     }
 
@@ -202,6 +205,7 @@ class InventoryTransferController extends Controller
             throw $e;
         }
 
+        broadcast(new DashboardEvent('transfer', 'approved', ['ref' => $transfer->reference]));
         return ApiResponse::updated($transfer->fresh()->load('items'), 'Transfer approved');
     }
 
@@ -215,6 +219,7 @@ class InventoryTransferController extends Controller
             'status'      => 'rejected',
             'approved_by' => Auth::user()?->user_id,
         ]);
+        broadcast(new DashboardEvent('transfer', 'rejected', ['ref' => $transfer->reference]));
         return ApiResponse::updated($transfer->fresh(), 'Transfer rejected');
     }
 

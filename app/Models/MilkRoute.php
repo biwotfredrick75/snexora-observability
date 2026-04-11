@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class MilkRoute extends Model
 {
@@ -14,4 +15,9 @@ class MilkRoute extends Model
         'merged_route_ids' => 'array',
         'sessions'         => 'array',
     ];
+
+    public function farmers(): HasMany
+    {
+        return $this->hasMany(Farmer::class, 'route_id');
+    }
 }
