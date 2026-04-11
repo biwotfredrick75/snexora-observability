@@ -368,6 +368,40 @@ Route::middleware('auth:api')->group(function () {
         Route::put('gl-groups/{id}',       [GlAccountGroupController::class, 'update']);
         Route::delete('gl-groups/{id}',    [GlAccountGroupController::class, 'destroy']);
 
+        // ── Journal Entries ───────────────────────────────────────────────────
+        Route::get('journal-entries',              [\App\Http\Controllers\Banking\JournalEntryController::class, 'index']);
+        Route::post('journal-entries',             [\App\Http\Controllers\Banking\JournalEntryController::class, 'store']);
+        Route::get('journal-entries/{id}',         [\App\Http\Controllers\Banking\JournalEntryController::class, 'show']);
+        Route::post('journal-entries/{id}/void',   [\App\Http\Controllers\Banking\JournalEntryController::class, 'void']);
+
+        // ── GL Inquiry ────────────────────────────────────────────────────────
+        Route::get('gl-inquiry',                   [\App\Http\Controllers\Banking\GlInquiryController::class, 'index']);
+        Route::get('gl-inquiry/type-labels',       [\App\Http\Controllers\Banking\GlInquiryController::class, 'typeLabels']);
+        Route::get('gl-inquiry/transaction',       [\App\Http\Controllers\Banking\GlInquiryController::class, 'transaction']);
+
+        // ── Bank Reconciliation ───────────────────────────────────────────────
+        Route::get('reconciliation/transactions',  [\App\Http\Controllers\Banking\BankReconciliationController::class, 'transactions']);
+        Route::post('reconciliation/toggle',       [\App\Http\Controllers\Banking\BankReconciliationController::class, 'toggle']);
+        Route::post('reconciliation/update-balance',[\App\Http\Controllers\Banking\BankReconciliationController::class, 'updateBalance']);
+        Route::post('reconciliation/finalise',     [\App\Http\Controllers\Banking\BankReconciliationController::class, 'finalise']);
+        Route::get('reconciliation/history',       [\App\Http\Controllers\Banking\BankReconciliationController::class, 'history']);
+
+        // ── Bank Transactions ─────────────────────────────────────────────────
+        Route::get('transactions/form-data',           [\App\Http\Controllers\Banking\BankTransactionController::class, 'formData']);
+        Route::get('transactions/account-balance',     [\App\Http\Controllers\Banking\BankTransactionController::class, 'accountBalance']);
+
+        Route::get('payments',                         [\App\Http\Controllers\Banking\BankTransactionController::class, 'paymentsIndex']);
+        Route::post('payments',                        [\App\Http\Controllers\Banking\BankTransactionController::class, 'storePayment']);
+        Route::post('payments/{id}/void',              [\App\Http\Controllers\Banking\BankTransactionController::class, 'voidPayment']);
+
+        Route::get('deposits',                         [\App\Http\Controllers\Banking\BankTransactionController::class, 'depositsIndex']);
+        Route::post('deposits',                        [\App\Http\Controllers\Banking\BankTransactionController::class, 'storeDeposit']);
+        Route::post('deposits/{id}/void',              [\App\Http\Controllers\Banking\BankTransactionController::class, 'voidDeposit']);
+
+        Route::get('transfers',                        [\App\Http\Controllers\Banking\BankTransactionController::class, 'transfersIndex']);
+        Route::post('transfers',                       [\App\Http\Controllers\Banking\BankTransactionController::class, 'storeTransfer']);
+        Route::post('transfers/{id}/void',             [\App\Http\Controllers\Banking\BankTransactionController::class, 'voidTransfer']);
+
         // ── Banking & GL Reports ───────────────────────────────────────────────
         Route::prefix('reports')->group(function () {
             Route::get('form-data',       [\App\Http\Controllers\Banking\BankingReportsController::class, 'formData']);
