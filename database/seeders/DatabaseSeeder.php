@@ -29,6 +29,10 @@ class DatabaseSeeder extends Seeder
         // Seed inventory locations
         $this->call(InventoryLocationSeeder::class);
 
+        // Seed GL account classes, groups and the full chart of accounts
+        $this->call(GlAccountClassSeeder::class);
+        $this->call(ChartOfAccountsSeeder::class);
+
         // Seed farmers (20 000 records) — run independently if needed
         // $this->call(FarmerSeeder::class);
 
