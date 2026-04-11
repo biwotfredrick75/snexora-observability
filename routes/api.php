@@ -379,6 +379,16 @@ Route::middleware('auth:api')->group(function () {
         Route::get('gl-inquiry/type-labels',       [\App\Http\Controllers\Banking\GlInquiryController::class, 'typeLabels']);
         Route::get('gl-inquiry/transaction',       [\App\Http\Controllers\Banking\GlInquiryController::class, 'transaction']);
 
+        // ── Bank Statement Import ─────────────────────────────────────────────
+        Route::get('statement-imports/form-data',   [\App\Http\Controllers\Banking\BankStatementImportController::class, 'formData']);
+        Route::post('statement-imports/parse',      [\App\Http\Controllers\Banking\BankStatementImportController::class, 'parse']);
+        Route::post('statement-imports',            [\App\Http\Controllers\Banking\BankStatementImportController::class, 'store']);
+        Route::get('statement-imports',             [\App\Http\Controllers\Banking\BankStatementImportController::class, 'index']);
+        Route::get('statement-imports/{id}/lines',  [\App\Http\Controllers\Banking\BankStatementImportController::class, 'lines']);
+        Route::post('statement-imports/match',      [\App\Http\Controllers\Banking\BankStatementImportController::class, 'match']);
+        Route::post('statement-imports/unmatch',    [\App\Http\Controllers\Banking\BankStatementImportController::class, 'unmatch']);
+        Route::get('statement-imports/gl-candidates', [\App\Http\Controllers\Banking\BankStatementImportController::class, 'glCandidates']);
+
         // ── Bank Reconciliation ───────────────────────────────────────────────
         Route::get('reconciliation/transactions',  [\App\Http\Controllers\Banking\BankReconciliationController::class, 'transactions']);
         Route::post('reconciliation/toggle',       [\App\Http\Controllers\Banking\BankReconciliationController::class, 'toggle']);
