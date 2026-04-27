@@ -34,15 +34,24 @@ class PaymentVoucher extends Model
     public static function nextPvnNo(): string
     {
         $year = now()->year;
+
         $last = static::where('pvn_no', 'like', "PVN%/{$year}")
             ->lockForUpdate()
-            ->orderByRaw('CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(pvn_no, \'/\', 2), \'/\', -1) AS UNSIGNED) DESC')
+            ->orderByRaw("
+                CAST(
+                    SUBSTRING_INDEX(
+                        SUBSTRING_INDEX(pvn_no, '/', 1),
+                    'PVN', -1
+                ) AS UNSIGNED
+            ) DESC
+            ")
             ->value('pvn_no');
 
         $seq = 1;
+
         if ($last) {
             preg_match('/PVN(\d+)\//', $last, $m);
-            $seq = (int)($m[1] ?? 0) + 1;
+            $seq = isset($m[1]) ? ((int)$m[1] + 1) : 1;
         }
 
         return 'PVN' . str_pad($seq, 4, '0', STR_PAD_LEFT) . "/{$year}";

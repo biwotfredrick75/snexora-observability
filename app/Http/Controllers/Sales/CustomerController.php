@@ -366,8 +366,8 @@ class CustomerController extends Controller
             'shipping_companies' => ShippingCompany::all(['id', 'name']),
             'tax_groups'         => TaxGroup::where('inactive', false)->get(['id', 'description']),
             'gl_accounts'        => GlAccount::where('inactive', false)
-                                        ->orderBy('account_code')
-                                        ->get(['account_code', 'account_name']),
+                                        ->orderBy('code')
+                                        ->get(['code', 'name']),
         ], 'Form data retrieved');
     }
 

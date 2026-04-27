@@ -4,108 +4,26 @@ namespace App\Http\Controllers\Analytics;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Traits\StatisticalAnalysisTrait;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Carbon\Carbon;
 
 class MilkForecastController extends Controller
 {
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    /** Simple linear regression. Returns slope, intercept, and R². */
-    private function linearRegression(array $y): array
-    {
-        $n = count($y);
-        if ($n < 2) {
-            return ['slope' => 0, 'intercept' => $y[0] ?? 0, 'r2' => 0];
-        }
-        $x     = range(0, $n - 1);
-        $sumX  = array_sum($x);
-        $sumY  = array_sum($y);
-        $sumXY = 0;
-        $sumX2 = 0;
-        foreach ($x as $i => $xi) {
-            $sumXY += $xi * $y[$i];
-            $sumX2 += $xi * $xi;
-        }
-        $denom    = $n * $sumX2 - $sumX * $sumX;
-        $slope    = $denom != 0 ? ($n * $sumXY - $sumX * $sumY) / $denom : 0;
-        $intercept = ($sumY - $slope * $sumX) / $n;
-
-        // R²
-        $yMean = $sumY / $n;
-        $ssTot = 0;
-        $ssRes = 0;
-        foreach ($y as $i => $yi) {
-            $yHat   = $slope * $i + $intercept;
-            $ssTot += ($yi - $yMean) ** 2;
-            $ssRes += ($yi - $yHat) ** 2;
-        }
-        $r2 = $ssTot > 0 ? 1 - $ssRes / $ssTot : 0;
-
-        return ['slope' => $slope, 'intercept' => $intercept, 'r2' => round($r2, 4)];
-    }
-
-    /** Day-of-week seasonal factors (0=Sun … 6=Sat), normalised around 1.0. */
-    private function seasonalFactors(array $dailyRows): array
-    {
-        $buckets = array_fill(0, 7, ['sum' => 0, 'count' => 0]);
-        foreach ($dailyRows as $row) {
-            $dow = Carbon::parse($row['date'])->dayOfWeek;
-            $buckets[$dow]['sum']   += $row['qty'];
-            $buckets[$dow]['count'] += 1;
-        }
-        $avgs  = [];
-        $grand = 0;
-        foreach ($buckets as $dow => $b) {
-            $avgs[$dow] = $b['count'] > 0 ? $b['sum'] / $b['count'] : 0;
-            $grand     += $avgs[$dow];
-        }
-        $mean = $grand / 7;
-        $factors = [];
-        foreach ($avgs as $dow => $avg) {
-            $factors[$dow] = $mean > 0 ? $avg / $mean : 1.0;
-        }
-        return $factors;
-    }
-
-    /** Mean Absolute Error of linear-fit residuals. */
-    private function mae(array $y, float $slope, float $intercept): float
-    {
-        $n = count($y);
-        if ($n === 0) return 0;
-        $sum = 0;
-        foreach ($y as $i => $yi) {
-            $sum += abs($yi - ($slope * $i + $intercept));
-        }
-        return $sum / $n;
-    }
-
-    /** 7-day rolling average over an array of values (right-aligned). */
-    private function movingAvg(array $values, int $window = 7): array
-    {
-        $result = [];
-        foreach ($values as $i => $v) {
-            $start   = max(0, $i - $window + 1);
-            $slice   = array_slice($values, $start, $i - $start + 1);
-            $result[] = count($slice) ? array_sum($slice) / count($slice) : 0;
-        }
-        return $result;
-    }
+    use StatisticalAnalysisTrait;
 
     // ── Endpoint: forecast ────────────────────────────────────────────────────
 
     public function forecast(Request $request): JsonResponse
     {
-        $horizonDays = (int) $request->get('horizon', 30);   // days to predict
-        $histDays    = (int) $request->get('history', 90);   // days of history
+        $horizonDays = (int) $request->get('horizon', 30);
+        $histDays    = (int) $request->get('history', 90);
 
         $histFrom = now()->subDays($histDays - 1)->toDateString();
         $histTo   = now()->toDateString();
 
-        // ── Historical daily totals ──────────────────────────────────────────
         $rawRows = DB::table('milk_grader_collections')
             ->whereBetween('date_collected', [$histFrom, $histTo])
             ->selectRaw('date_collected AS date, SUM(quantity) AS qty, AVG(rate) AS avg_rate')
@@ -115,9 +33,9 @@ class MilkForecastController extends Controller
             ->keyBy('date');
 
         // Fill every calendar day (missing = 0)
-        $allDates  = [];
-        $cur       = Carbon::parse($histFrom);
-        $end       = Carbon::parse($histTo);
+        $allDates = [];
+        $cur      = Carbon::parse($histFrom);
+        $end      = Carbon::parse($histTo);
         while ($cur->lte($end)) {
             $d   = $cur->toDateString();
             $row = $rawRows->get($d);
@@ -131,19 +49,17 @@ class MilkForecastController extends Controller
 
         $qtyValues = array_column($allDates, 'qty');
         $reg       = $this->linearRegression($qtyValues);
-        $seasonal  = $this->seasonalFactors($allDates);
+        $seasonal  = $this->seasonalFactors($allDates, 'date', 'qty');
         $mae       = $this->mae($qtyValues, $reg['slope'], $reg['intercept']);
         $movAvg    = $this->movingAvg($qtyValues);
 
-        // ── Attach moving average to historical ──────────────────────────────
         foreach ($allDates as $i => &$row) {
-            $row['ma7']      = round($movAvg[$i], 1);
+            $row['ma7']       = round($movAvg[$i], 1);
             $row['trend_val'] = round($reg['slope'] * $i + $reg['intercept'], 1);
         }
         unset($row);
 
-        // ── Future predictions ───────────────────────────────────────────────
-        $n          = count($allDates);
+        $n           = count($allDates);
         $predictions = [];
         for ($i = 0; $i < $horizonDays; $i++) {
             $futureDate = Carbon::parse($histTo)->addDays($i + 1);
@@ -159,35 +75,26 @@ class MilkForecastController extends Controller
             ];
         }
 
-        // ── Trend classification ─────────────────────────────────────────────
-        $dailyChange  = $reg['slope'];
-        $baseLevel    = $reg['intercept'] + $reg['slope'] * ($n / 2);
-        $trendPct     = $baseLevel > 0 ? round(($dailyChange / $baseLevel) * 100, 2) : 0;
-        $trendLabel   = abs($trendPct) < 0.3 ? 'stable'
-            : ($trendPct > 0 ? 'growing' : 'declining');
-
-        // Coefficient of variation
-        $mean = count($qtyValues) ? array_sum($qtyValues) / count($qtyValues) : 0;
-        $variance = 0;
+        $trend       = $this->classifyTrend($reg['slope'], $reg['intercept'], $n);
+        $mean        = count($qtyValues) ? array_sum($qtyValues) / count($qtyValues) : 0;
+        $variance    = 0;
         foreach ($qtyValues as $v) { $variance += ($v - $mean) ** 2; }
-        $std = $mean > 0 ? sqrt($variance / count($qtyValues)) : 0;
-        $cv  = $mean > 0 ? round($std / $mean * 100, 1) : 0;
-
-        // Projected next-period total
+        $std         = $mean > 0 ? sqrt($variance / count($qtyValues)) : 0;
+        $cv          = $mean > 0 ? round($std / $mean * 100, 1) : 0;
         $projTotal30 = round(array_sum(array_column(array_slice($predictions, 0, 30), 'qty')), 1);
 
         return ApiResponse::success([
-            'history'      => $allDates,
-            'predictions'  => $predictions,
-            'model'        => [
-                'slope'        => round($reg['slope'], 4),
-                'intercept'    => round($reg['intercept'], 2),
-                'r2'           => $reg['r2'],
-                'mae'          => round($mae, 1),
-                'trend'        => $trendLabel,
-                'trend_pct'    => $trendPct,
-                'cv'           => $cv,
-                'proj_30d'     => $projTotal30,
+            'history'     => $allDates,
+            'predictions' => $predictions,
+            'model'       => [
+                'slope'     => round($reg['slope'], 4),
+                'intercept' => round($reg['intercept'], 2),
+                'r2'        => $reg['r2'],
+                'mae'       => round($mae, 1),
+                'trend'     => $trend['label'],
+                'trend_pct' => $trend['pct'],
+                'cv'        => $cv,
+                'proj_30d'  => $projTotal30,
             ],
         ], 'Forecast computed');
     }
@@ -197,10 +104,9 @@ class MilkForecastController extends Controller
     public function insights(Request $request): JsonResponse
     {
         $to   = now()->toDateString();
-        $from = now()->subDays(59)->toDateString();   // 60-day window
-        $prev = now()->subDays(119)->toDateString();  // prior 60-day window
+        $from = now()->subDays(59)->toDateString();
+        $prev = now()->subDays(119)->toDateString();
 
-        // ── Current & prior period totals ────────────────────────────────────
         $current = DB::table('milk_grader_collections')
             ->whereBetween('date_collected', [$from, $to])
             ->selectRaw('SUM(quantity) AS qty, SUM(quantity*rate) AS amount, AVG(rate) AS avg_rate, COUNT(DISTINCT date_collected) AS days')
@@ -221,7 +127,6 @@ class MilkForecastController extends Controller
         $rplPrior   = $prQty  > 0 ? round($prAmt  / $prQty,  2) : 0;
         $rplTrend   = $rplPrior > 0 ? round(($rplCurrent - $rplPrior) / $rplPrior * 100, 1) : null;
 
-        // ── Top graders by volume & trend ────────────────────────────────────
         $graders = DB::table('milk_grader_collections as gc')
             ->whereBetween('gc.date_collected', [$from, $to])
             ->selectRaw('gc.location AS code, SUM(gc.quantity) AS qty, SUM(gc.quantity*gc.rate) AS amount, COUNT(DISTINCT gc.date_collected) AS days')
@@ -242,18 +147,17 @@ class MilkForecastController extends Controller
             $prevQty = $prev ? (float)$prev->qty_prev : 0;
             $growth  = $prevQty > 0 ? round(((float)$g->qty - $prevQty) / $prevQty * 100, 1) : null;
             return [
-                'code'    => $g->code,
-                'qty'     => round((float)$g->qty, 1),
-                'amount'  => round((float)$g->amount, 2),
-                'days'    => (int)$g->days,
-                'share'   => $curQty > 0 ? round((float)$g->qty / $curQty * 100, 1) : 0,
-                'growth'  => $growth,
-                'trend'   => $growth === null ? 'new'
+                'code'   => $g->code,
+                'qty'    => round((float)$g->qty, 1),
+                'amount' => round((float)$g->amount, 2),
+                'days'   => (int)$g->days,
+                'share'  => $curQty > 0 ? round((float)$g->qty / $curQty * 100, 1) : 0,
+                'growth' => $growth,
+                'trend'  => $growth === null ? 'new'
                     : (abs($growth) < 5 ? 'stable' : ($growth > 0 ? 'growing' : 'declining')),
             ];
         });
 
-        // ── Best day of week ─────────────────────────────────────────────────
         $byDow = DB::table('milk_grader_collections')
             ->whereBetween('date_collected', [$from, $to])
             ->selectRaw('DAYOFWEEK(date_collected) AS dow, AVG(quantity) AS avg_qty, COUNT(DISTINCT date_collected) AS days')
@@ -267,7 +171,6 @@ class MilkForecastController extends Controller
                 'days'    => (int)$r->days,
             ]);
 
-        // ── Farmer activity ──────────────────────────────────────────────────
         $farmersCurrent = DB::table('milk_grader_collections as gc')
             ->join('milk_purchases as mp', 'mp.id', '=', 'gc.purchase_id')
             ->join('milk_purchase_items as mpi', 'mpi.purchase_id', '=', 'mp.id')
@@ -288,35 +191,24 @@ class MilkForecastController extends Controller
             ? round(($farmersCurrent - $farmersPrior) / $farmersPrior * 100, 1)
             : null;
 
-        // ── Zero-collection days ─────────────────────────────────────────────
-        $activeDays    = (int)($current->days ?? 0);
-        $calendarDays  = Carbon::parse($from)->diffInDays(Carbon::parse($to)) + 1;
-        $missingDays   = $calendarDays - $activeDays;
+        $activeDays   = (int)($current->days ?? 0);
+        $calendarDays = Carbon::parse($from)->diffInDays(Carbon::parse($to)) + 1;
+        $missingDays  = $calendarDays - $activeDays;
 
-        // ── Anomalies (days > 2 std dev from mean) ───────────────────────────
         $dailyQtys = DB::table('milk_grader_collections')
             ->whereBetween('date_collected', [$from, $to])
             ->selectRaw('date_collected AS date, SUM(quantity) AS qty')
             ->groupBy('date_collected')
             ->orderBy('date_collected')
-            ->get();
+            ->get()
+            ->toArray();
 
-        $vals  = $dailyQtys->pluck('qty')->map(fn($v) => (float)$v)->toArray();
-        $mean  = count($vals) ? array_sum($vals) / count($vals) : 0;
-        $var   = 0;
-        foreach ($vals as $v) { $var += ($v - $mean) ** 2; }
-        $std   = count($vals) > 1 ? sqrt($var / count($vals)) : 0;
-        $anomalies = $dailyQtys->filter(function ($r) use ($mean, $std) {
-            return $std > 0 && abs((float)$r->qty - $mean) > 2 * $std;
-        })->values()->map(fn($r) => [
-            'date' => $r->date,
-            'qty'  => round((float)$r->qty, 1),
-            'type' => (float)$r->qty > $mean ? 'spike' : 'drop',
-        ]);
+        $vals      = array_map(fn($r) => (float)$r->qty, $dailyQtys);
+        $anomalies = $this->detectAnomalies($vals, array_map('get_object_vars', $dailyQtys), 'date', 'qty');
 
         return ApiResponse::success([
-            'period'       => ['from' => $from, 'to' => $to],
-            'summary'      => [
+            'period'    => ['from' => $from, 'to' => $to],
+            'summary'   => [
                 'qty'           => round($curQty, 1),
                 'amount'        => round($curAmt, 2),
                 'growth_qty'    => $growthQty,
@@ -328,9 +220,9 @@ class MilkForecastController extends Controller
                 'farmers'       => $farmersCurrent,
                 'farmer_growth' => $farmerGrowth,
             ],
-            'graders'      => $graderStats->values(),
-            'by_dow'       => $byDow->values(),
-            'anomalies'    => $anomalies->values(),
+            'graders'   => $graderStats->values(),
+            'by_dow'    => $byDow->values(),
+            'anomalies' => $anomalies,
         ], 'Insights computed');
     }
 
@@ -338,26 +230,17 @@ class MilkForecastController extends Controller
 
     public function advice(Request $request): JsonResponse
     {
-        $apiKey = config('services.groq.key');
-        if (! $apiKey) {
-            return ApiResponse::success([
-                'error'   => 'no_key',
-                'message' => 'GROQ_API_KEY is not configured. Add it to .env to enable AI advice.',
-            ], 'No API key');
-        }
+        $to      = now()->toDateString();
+        $from    = now()->subDays(59)->toDateString();
+        $prev    = now()->subDays(119)->toDateString();
+        $prevTo  = now()->subDays(60)->toDateString();
 
-        // Pull summary metrics to build the prompt
-        $to   = now()->toDateString();
-        $from = now()->subDays(59)->toDateString();
-        $prev = now()->subDays(119)->toDateString();
-        $prevTo = now()->subDays(60)->toDateString();
-
-        $cur  = DB::table('milk_grader_collections')
+        $cur = DB::table('milk_grader_collections')
             ->whereBetween('date_collected', [$from, $to])
             ->selectRaw('SUM(quantity) AS qty, SUM(quantity*rate) AS amount, AVG(rate) AS avg_rate, COUNT(DISTINCT date_collected) AS days')
             ->first();
 
-        $prv  = DB::table('milk_grader_collections')
+        $prv = DB::table('milk_grader_collections')
             ->whereBetween('date_collected', [$prev, $prevTo])
             ->selectRaw('SUM(quantity) AS qty, SUM(quantity*rate) AS amount, AVG(rate) AS avg_rate')
             ->first();
@@ -370,17 +253,15 @@ class MilkForecastController extends Controller
             ->limit(5)
             ->get();
 
-        $curQty = round((float)($cur->qty ?? 0), 1);
+        $curQty = round((float)($cur->qty    ?? 0), 1);
         $curAmt = round((float)($cur->amount ?? 0), 2);
-        $prvQty = round((float)($prv->qty ?? 0), 1);
+        $prvQty = round((float)($prv->qty    ?? 0), 1);
         $prvAmt = round((float)($prv->amount ?? 0), 2);
         $rpl    = $curQty > 0 ? round($curAmt / $curQty, 4) : 0;
         $avgRate = round((float)($cur->avg_rate ?? 0), 4);
         $days   = (int)($cur->days ?? 0);
-        $calDays = 60;
 
-        $graderList = $topGraders->map(fn($g) => "  - {$g->location}: " . round((float)$g->qty, 1) . " L")->implode("\n");
-
+        $graderList   = $topGraders->map(fn($g) => "  - {$g->location}: " . round((float)$g->qty, 1) . " L")->implode("\n");
         $growthQtyPct = $prvQty > 0 ? round(($curQty - $prvQty) / $prvQty * 100, 1) : 'N/A';
         $growthAmtPct = $prvAmt > 0 ? round(($curAmt - $prvAmt) / $prvAmt * 100, 1) : 'N/A';
 
@@ -392,7 +273,7 @@ OPERATIONAL DATA (last 60 days vs prior 60 days):
 - Total revenue: KES {$curAmt} (vs KES {$prvAmt}, change: {$growthAmtPct}%)
 - Average buying rate: KES {$avgRate}/L
 - Revenue per litre collected: KES {$rpl}
-- Active collection days: {$days} of {$calDays} calendar days
+- Active collection days: {$days} of 60 calendar days
 - Top graders by volume:
 {$graderList}
 
@@ -422,40 +303,17 @@ Respond ONLY with a valid JSON object (no markdown, no extra text) with this exa
 }
 PROMPT;
 
-        $response = Http::timeout(30)
-            ->withHeaders([
-                'Authorization' => 'Bearer ' . $apiKey,
-                'Content-Type'  => 'application/json',
-            ])
-            ->post('https://api.groq.com/openai/v1/chat/completions', [
-                'model'       => 'llama-3.3-70b-versatile',
-                'max_tokens'  => 1200,
-                'temperature' => 0.3,
-                'messages'    => [
-                    ['role' => 'user', 'content' => $prompt],
-                ],
-            ]);
-
-        if (! $response->successful()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Groq API error: ' . $response->status(),
-            ], 502);
+        try {
+            $advice = $this->callGroq($prompt);
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 502);
         }
 
-        $raw = $response->json('choices.0.message.content', '{}');
-
-        // Strip markdown fences if model wrapped in them anyway
-        $raw = preg_replace('/^```(?:json)?\s*/m', '', $raw);
-        $raw = preg_replace('/```\s*$/m', '', $raw);
-
-        $advice = json_decode(trim($raw), true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Could not parse Groq response as JSON.',
-                'raw'     => $raw,
-            ], 500);
+        if (isset($advice['error']) && $advice['error'] === 'no_key') {
+            return ApiResponse::success([
+                'error'   => 'no_key',
+                'message' => 'GROQ_API_KEY is not configured. Add it to .env to enable AI advice.',
+            ], 'No API key');
         }
 
         return ApiResponse::success([

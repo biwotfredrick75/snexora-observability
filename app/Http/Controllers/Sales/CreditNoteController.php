@@ -176,6 +176,7 @@ class CreditNoteController extends Controller
             // Reduce original invoice item quantities (match by stock_id)
             if ($cn->inv_id) {
                 foreach ($cn->items as $cnItem) {
+                    $cnItem->qty=0;
                     SalesInvoiceItem::where('inv_id', $cn->inv_id)
                         ->where('stock_id', $cnItem->stock_id)
                         ->decrement('qty', (float) $cnItem->qty);

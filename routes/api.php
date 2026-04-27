@@ -1,6 +1,11 @@
 <?php
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Analytics\MilkForecastController;
+use App\Http\Controllers\Analytics\SalesAnalyticsController;
+use App\Http\Controllers\Analytics\InventoryAnalyticsController;
+use App\Http\Controllers\Analytics\ManufacturingAnalyticsController;
+use App\Http\Controllers\Analytics\PurchasesAnalyticsController;
+use App\Http\Controllers\Analytics\AiChatController;
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\Auth\GraderAuthController;
 use App\Http\Controllers\Auth\RolePermissionController;
@@ -750,6 +755,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('sales/invoices',                         [SalesInvoiceController::class, 'index']);
     Route::post('sales/invoices',                        [SalesInvoiceController::class, 'store']);
     Route::get('sales/invoices/{id}',                    [SalesInvoiceController::class, 'show']);
+    Route::get('sales/creditnote/{id}',            [SalesInvoiceController::class, 'showCredit']);
     Route::put('sales/invoices/{id}',                    [SalesInvoiceController::class, 'update']);
     Route::post('sales/invoices/{id}/place',             [SalesInvoiceController::class, 'place']);
     Route::post('sales/invoices/{id}/cancel',            [SalesInvoiceController::class, 'cancel']);
@@ -824,6 +830,29 @@ Route::middleware('auth:api')->group(function () {
     Route::get('analytics/milk/forecast',  [MilkForecastController::class, 'forecast']);
     Route::get('analytics/milk/insights',  [MilkForecastController::class, 'insights']);
     Route::post('analytics/milk/advice',   [MilkForecastController::class, 'advice']);
+
+    // ── Sales Analytics ──────────────────────────────────────────────────────
+    Route::get('analytics/sales/forecast',         [SalesAnalyticsController::class, 'forecast']);
+    Route::get('analytics/sales/insights',         [SalesAnalyticsController::class, 'insights']);
+    Route::post('analytics/sales/advice',          [SalesAnalyticsController::class, 'advice']);
+
+    // ── Inventory Analytics ──────────────────────────────────────────────────
+    Route::get('analytics/inventory/forecast',     [InventoryAnalyticsController::class, 'forecast']);
+    Route::get('analytics/inventory/insights',     [InventoryAnalyticsController::class, 'insights']);
+    Route::post('analytics/inventory/advice',      [InventoryAnalyticsController::class, 'advice']);
+
+    // ── Manufacturing Analytics ──────────────────────────────────────────────
+    Route::get('analytics/manufacturing/forecast', [ManufacturingAnalyticsController::class, 'forecast']);
+    Route::get('analytics/manufacturing/insights', [ManufacturingAnalyticsController::class, 'insights']);
+    Route::post('analytics/manufacturing/advice',  [ManufacturingAnalyticsController::class, 'advice']);
+
+    // ── Purchases Analytics ──────────────────────────────────────────────────
+    Route::get('analytics/purchases/forecast',     [PurchasesAnalyticsController::class, 'forecast']);
+    Route::get('analytics/purchases/insights',     [PurchasesAnalyticsController::class, 'insights']);
+    Route::post('analytics/purchases/advice',      [PurchasesAnalyticsController::class, 'advice']);
+
+    // ── AI Chat ──────────────────────────────────────────────────────────────
+    Route::post('analytics/chat',                  [AiChatController::class, 'chat']);
     Route::get('sales/mpesa/tills',                       [MpesaController::class, 'tills']);
     Route::get('sales/mpesa/status',                      [MpesaController::class, 'checkStatus']);
     Route::get('sales/mpesa',                             [MpesaController::class, 'index']);

@@ -62,7 +62,7 @@ class MpesaController extends Controller
 
         $query = MpesaTransaction::with('customer:debtor_no,name', 'payment')
             ->where('TransID', $transId);
-
+ 
         if ($till) {
             $query->where('BusinessShortCode', $till);
         }
@@ -93,8 +93,8 @@ class MpesaController extends Controller
                 'unallocated_amount' => $tx->payment->unallocated_amount,
                 'payment_date'       => $tx->payment->payment_date,
             ] : null,
-            'transfer_user' => $tx->attributes['transfer_user'] ?: null,
-            'transfer_time' => $tx->attributes['transfer_time'] ?? null,
+            'transfer_user' => $tx->transfer_user ?: null,
+            'transfer_time' => $tx->transfer_time ?? null,
         ], 'Transaction found');
     }
 

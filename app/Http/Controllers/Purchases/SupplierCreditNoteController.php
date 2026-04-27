@@ -28,8 +28,8 @@ class SupplierCreditNoteController extends Controller
 
         $dimensions = DB::table('dimensions')->select('id', 'name')->orderBy('name')->get();
 
-        $glAccounts = DB::table('chart_of_accounts')
-            ->select('account_code', 'account_name')
+        $glAccounts = DB::table('gl_accounts')
+            ->select('code as account_code', 'name as account_name')
             ->orderBy('account_code')
             ->get();
 

@@ -27,15 +27,15 @@ class PaymentVoucherController extends Controller
     {
         // Bank/cash accounts from GL
         $bankAccounts = GlAccount::where('inactive', false)
-            ->whereIn('account_type', ['bank', 'cash', 'Bank', 'Cash', 'BANK', 'CASH'])
-            ->select('account_code', 'account_name', 'account_type')
+            //->whereIn('account_type', ['bank', 'cash', 'Bank', 'Cash', 'BANK', 'CASH'])
+            ->select('code as account_code', 'name as account_name' )
             ->orderBy('account_code')
             ->get();
 
         // Fallback: if no typed accounts, return all active accounts
         if ($bankAccounts->isEmpty()) {
             $bankAccounts = GlAccount::where('inactive', false)
-                ->select('account_code', 'account_name', 'account_type')
+                ->select('code as account_code', 'name as account_name' )
                 ->orderBy('account_code')
                 ->get();
         }

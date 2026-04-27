@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Sales;
 use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\CreditNote;
 use App\Models\CustomerPayment;
 use App\Models\DebtorAllocation;
 use App\Services\Sales\AllocationService;
@@ -172,18 +173,83 @@ class SalesInvoiceController extends Controller
             return ApiResponse::created($invoice->load('items'), 'Sales invoice created');
         });
     }
-
+   function checkCreditNoteItems($inv_id){
+      return DB::table('credit_note_items as cni')
+        ->join('credit_notes as cn', 'cn.id', '=', 'cni.cn_id')
+        ->where('cn.inv_id', $inv_id)
+        ->select('cni.stock_id', DB::raw('SUM(cni.qty) as qty'))
+        ->groupBy('cni.stock_id')
+        ->get();
+   }
     public function show(int $id): JsonResponse
     {
         $invoice = SalesInvoice::with(['items', 'customer', 'allocations'])->find($id);
         if (! $invoice) {
             return ApiResponse::notFound('Sales invoice not found');
         }
+         
         $invoice->allocated_amount    = round($invoice->allocations->sum('amount'), 2);
         $invoice->outstanding_balance = round($invoice->amount_total - $invoice->allocated_amount, 2);
         return ApiResponse::success($invoice, 'Sales invoice retrieved');
     }
+public function showCredit(int $id): JsonResponse
+{
+    $invoice = SalesInvoice::with(['items', 'customer', 'allocations'])->find($id);
 
+    if (! $invoice) {
+        return ApiResponse::notFound('Sales invoice not found');
+    }
+
+    // get credited qty per stock_id
+    $creditNotes = DB::table('credit_note_items as cni')
+        ->join('credit_notes as cn', 'cn.id', '=', 'cni.cn_id')
+        ->where('cn.inv_id', $invoice->id)
+        ->select(
+            'cni.stock_id',
+            DB::raw('SUM(cni.qty) as credited_qty')
+        )
+        ->groupBy('cni.stock_id')
+        ->get()
+        ->keyBy('stock_id');
+
+    // transform invoice items
+    $invoice->setRelation('items', $invoice->items->map(function ($item) use ($creditNotes) {
+
+        $invoicedQty = (float) $item->qty;
+
+        $creditedQty = isset($creditNotes[$item->stock_id])
+            ? (float) $creditNotes[$item->stock_id]->credited_qty
+            : 0;
+
+        // ✅ FINAL RULE
+        $remainingQty = $invoicedQty - $creditedQty;
+
+        return [
+            'id'             => $item->id,
+            'stock_id'       => $item->stock_id,
+            'description'    => $item->description,
+
+            // core logic
+            'qty'            => max(0, $remainingQty),
+            'invoiced_qty'   => $invoicedQty,
+            'credited_qty'   => $creditedQty,
+            'remaining_qty'  => max(0, $remainingQty),
+
+            // optional
+            'price'          => (float) $item->price,
+            'line_total'     => (float) $item->line_total,
+        ];
+    }));
+
+    // allocations
+    $invoice->allocated_amount = round($invoice->allocations->sum('amount'), 2);
+    $invoice->outstanding_balance = round(
+        $invoice->amount_total - $invoice->allocated_amount,
+        2
+    );
+
+    return ApiResponse::success($invoice, 'Sales invoice retrieved');
+}
     public function allocations(int $id): JsonResponse
     {
         $invoice = SalesInvoice::find($id);
