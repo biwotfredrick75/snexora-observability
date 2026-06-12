@@ -18,8 +18,8 @@ return new class extends Migration
             $table->decimal('quantity', 12, 3)->default(0);
             $table->timestamps();
 
-            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->cascadeOnDelete();
-            $table->foreign('farmer_id')->references('id')->on('farmers')->nullOnDelete();
+            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->noActionOnDelete();
+            $table->foreign('farmer_id')->references('id')->on('farmers')->noActionOnDelete();
         });
     }
 

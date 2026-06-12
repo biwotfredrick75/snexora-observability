@@ -99,6 +99,9 @@ class RolePermissionSeeder extends Seeder
 
             // Role Assignment
             'assign-roles',
+
+            // Audit Module
+            'view-audit',
         ];
 
         // Create permissions
@@ -110,28 +113,7 @@ class RolePermissionSeeder extends Seeder
         $roles = [
             'super_admin' => $permissions, // Super admin has all permissions
 
-            'admin' => [
-                'view-users',
-                'create-users',
-                'edit-users',
-                'view-roles',
-                'view-permissions',
-                'view-dashboard',
-                'view-sales',
-                'view-purchases',
-                'view-inventory',
-                'view-farmers',
-                'view-assets',
-                'view-banking',
-                'view-manufacturing',
-                'manage-manufacturing',
-                'reports-manufacturing',
-                'view-transport',
-                'view-payroll',
-                'view-hrm',
-                'view-crm',
-                'view-setup',
-            ],
+            'admin' => $permissions,
 
             'sales_manager' => [
                 'view-dashboard',

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Farmers;
 use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Services\Kafka\KafkaProducer;
 use App\Models\MilkPurchase;
 use App\Models\MilkRoute;
 use App\Models\MilkCollectionShift;
@@ -177,6 +178,30 @@ class MilkPurchaseController extends Controller
                 'amount' => round($totalAmount, 2),
             ]));
 
+            // Publish to Kafka when batch has 100+ farmer lines for downstream processing
+            $itemCount = count($validItems);
+            if ($itemCount >= 100) {
+                try {
+                    (new KafkaProducer())->publish('milk.purchase.bulk', [
+                        'purchase_id'  => $purchase->id,
+                        'reference_no' => $ref,
+                        'route_id'     => $purchase->route_id,
+                        'shift_id'     => $purchase->shift_id,
+                        'grader_id'    => $purchase->grader_id,
+                        'invoice_date' => $invoiceDate,
+                        'item_count'   => $itemCount,
+                        'total_qty'    => round($totalQty, 2),
+                        'total_amount' => round($totalAmount, 2),
+                    ], (string) $purchase->id);
+                } catch (\Throwable $e) {
+                    // Non-fatal — batch is already saved; Kafka failure must not roll back
+                    \Log::warning('Kafka publish skipped for bulk purchase', [
+                        'purchase_id' => $purchase->id,
+                        'error'       => $e->getMessage(),
+                    ]);
+                }
+            }
+
             return ApiResponse::created(
                 $purchase->load(['items.farmer', 'route', 'shift', 'graderLocation']),
                 "Batch {$ref} submitted — {$totalQty} L, KES " . number_format($totalAmount, 2)
@@ -244,43 +269,26 @@ class MilkPurchaseController extends Controller
     }
 
     // ── Bulk approve ──────────────────────────────────────────────────────────
-    // Runs each purchase through the full approval service individually.
+    // Publishes to Kafka; the Go approval service consumes, processes, and
+    // POSTs the result back via /api/internal/bulk-approval-result, which
+    // then broadcasts via Reverb → frontend.
     public function bulkApprove(Request $request): JsonResponse
     {
         $request->validate(['ids' => 'required|array|min:1', 'ids.*' => 'integer']);
 
-        $user     = auth()->user()?->user_id ?? '';
-        $approved = 0;
-        $errors   = [];
+        $user      = auth()->user()?->user_id ?? '';
+        $count     = count($request->ids);
+        $requestId = (string) \Illuminate\Support\Str::uuid();
 
-        $purchases = MilkPurchase::whereIn('id', $request->ids)
-            ->where('status', 'submitted')
-            ->get();
-
-        foreach ($purchases as $purchase) {
-            DB::beginTransaction();
-            try {
-                $this->approvalService->postApproval($purchase, $user);
-                DB::commit();
-                $approved++;
-            } catch (\Throwable $e) {
-                DB::rollBack();
-                $errors[] = "#{$purchase->id}: " . $e->getMessage();
-            }
-        }
-
-        $message = "{$approved} purchase(s) approved";
-        if ($errors) {
-            $message .= '; ' . count($errors) . ' failed';
-        }
-
-        if ($approved > 0) {
-            broadcast(new DashboardEvent('milk_purchase', 'bulk_approved', ['count' => $approved]));
-        }
+        (new KafkaProducer())->publish('milk.purchase.approve', [
+            'request_id'  => $requestId,
+            'ids'         => $request->ids,
+            'approved_by' => $user,
+        ], $requestId);
 
         return ApiResponse::success(
-            ['approved' => $approved, 'errors' => $errors],
-            $message
+            ['queued' => $count, 'request_id' => $requestId],
+            "Processing {$count} purchase(s) — you will be notified when done"
         );
     }
 

@@ -39,7 +39,7 @@ return new class extends Migration
             $table->decimal('qty', 14, 4)->default(0);
             $table->string('unit_of_measure', 30)->default('');
             $table->decimal('line_total', 18, 4)->default(0);
-            $table->foreign('pr_id')->references('id')->on('purchase_requisitions')->onDelete('cascade');
+            $table->foreign('pr_id')->references('id')->on('purchase_requisitions')->noActionOnDelete();
         });
     }
 

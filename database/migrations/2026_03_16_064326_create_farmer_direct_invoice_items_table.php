@@ -23,7 +23,7 @@ return new class extends Migration
             $table->decimal('line_total', 14, 4)->default(0);
             $table->timestamps();
 
-            $table->foreign('invoice_id')->references('id')->on('farmer_direct_invoices')->cascadeOnDelete();
+            $table->foreign('invoice_id')->references('id')->on('farmer_direct_invoices')->noActionOnDelete();
         });
     }
 

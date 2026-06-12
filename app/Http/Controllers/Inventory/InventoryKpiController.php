@@ -17,30 +17,37 @@ class InventoryKpiController extends Controller
         // ── 1. Active stock items ─────────────────────────────────────────────
         $stockItems = DB::table('items')->where('inactive', 0)->count();
 
-        // ── 2. Total inventory value (net of all movements) ───────────────────
+        // ── 2. Total inventory value: SUM(qty × standard_cost) from movements ────
+        //    standard_cost is populated at movement time and reflects actual item cost.
         $stockValue = (float) DB::table('stock_movements')
-            ->selectRaw('COALESCE(SUM(qty * price), 0)')
-            ->value(DB::raw('COALESCE(SUM(qty * price), 0)'));
+            ->selectRaw('COALESCE(SUM(qty * standard_cost), 0) as val')
+            ->value('val');
 
         // ── 3. Low stock alerts: balance < reorder_level ──────────────────────
+        //    item_reorder_levels.location_id is the integer PK of inventory_locations,
+        //    stock_movements.loc_code is the string code — join through locations table.
         $lowStock = DB::table('item_reorder_levels as rl')
+            ->join('inventory_locations as il', 'il.id', '=', 'rl.location_id')
             ->joinSub(
                 DB::table('stock_movements')
                     ->select('stock_id', 'loc_code', DB::raw('SUM(qty) as balance'))
                     ->groupBy('stock_id', 'loc_code'),
                 'bal',
                 fn($j) => $j->on('bal.stock_id', '=', 'rl.stock_id')
-                             ->on('bal.loc_code', '=', 'rl.location_id')
+                             ->on('bal.loc_code', '=', 'il.code')
             )
             ->whereRaw('bal.balance < rl.reorder_level')
+            ->whereRaw('bal.balance > 0')
             ->count();
 
-        // ── 4. Out-of-stock items (net qty <= 0) ──────────────────────────────
-        $outOfStock = DB::table('stock_movements')
-            ->select('stock_id', DB::raw('SUM(qty) as net_qty'))
-            ->groupBy('stock_id')
-            ->havingRaw('SUM(qty) <= 0')
-            ->get()->count();
+        // ── 4. Out-of-stock items (net qty <= 0 across all locations) ──────────
+        $outOfStock = DB::table(
+            DB::table('stock_movements')
+                ->select('stock_id', DB::raw('SUM(qty) as net_qty'))
+                ->groupBy('stock_id')
+                ->havingRaw('SUM(qty) <= 0'),
+            'oos'
+        )->count();
 
         // ── 5. Today's inbound and outbound movements ─────────────────────────
         $todayIn = (float) DB::table('stock_movements')

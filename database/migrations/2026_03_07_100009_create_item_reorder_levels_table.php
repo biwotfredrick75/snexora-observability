@@ -15,8 +15,8 @@ return new class extends Migration
             $table->decimal('reorder_level', 18, 6)->default(0);
             $table->timestamps();
 
-            $table->foreign('item_id')->references('id')->on('items')->cascadeOnDelete();
-            $table->foreign('location_id')->references('id')->on('inventory_locations')->cascadeOnDelete();
+            $table->foreign('item_id')->references('id')->on('items')->noActionOnDelete();
+            $table->foreign('location_id')->references('id')->on('inventory_locations')->noActionOnDelete();
             $table->unique(['item_id', 'location_id']);
         });
     }

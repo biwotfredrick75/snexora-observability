@@ -21,8 +21,8 @@ return new class extends Migration
 
         Schema::create('item_tax_type_exemptions', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('item_tax_type_id')->constrained('item_tax_types')->cascadeOnDelete();
-            $table->foreignId('tax_type_id')->constrained('tax_types')->cascadeOnDelete();
+            $table->foreignId('item_tax_type_id')->constrained('item_tax_types')->noActionOnDelete();
+            $table->foreignId('tax_type_id')->constrained('tax_types')->noActionOnDelete();
             $table->unique(['item_tax_type_id', 'tax_type_id']);
         });
     }

@@ -31,7 +31,7 @@ return new class extends Migration
 
         Schema::create('pos_transaction_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('pos_transaction_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('pos_transaction_id')->constrained()->noActionOnDelete();
             $table->string('stock_id', 20);
             $table->string('description', 200);
             $table->decimal('unit_price',      12, 4)->default(0);

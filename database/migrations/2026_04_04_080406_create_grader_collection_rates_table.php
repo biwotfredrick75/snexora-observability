@@ -21,7 +21,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['location_id', 'inactive']);
-            $table->foreign('location_id')->references('id')->on('inventory_locations')->onDelete('cascade');
+            $table->foreign('location_id')->references('id')->on('inventory_locations')->noActionOnDelete();
         });
     }
 

@@ -22,7 +22,7 @@ class Item extends Model
         // Dimensions
         'dimension_id', 'dimension2_id',
         // Costs
-        'purchase_cost', 'material_cost', 'labour_cost', 'overhead_cost',
+        'purchase_cost', 'material_cost', 'labour_cost', 'overhead_cost', 'standard_cost',
         // Status flags
         'inactive', 'no_sale', 'no_purchase', 'editable',
         // Depreciation
@@ -32,6 +32,10 @@ class Item extends Model
         'bar_code', 'apply_batching', 'hs_code', 'material_weight',
         'item_commission', 'sell_in_pieces', 'sub_uoms',
         'ai_item', 'treatment_item', 'image_filename',
+        // eTIMS
+        'etims_item_name', 'etims_stock_category', 'etims_item_type',
+        'etims_taxation_type', 'etims_item_code', 'etims_stock_class',
+        'etims_packaging_unit', 'etims_quantity_unit', 'etims_origin_nation',
     ];
 
     protected $casts = [

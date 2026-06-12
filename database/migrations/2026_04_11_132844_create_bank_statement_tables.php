@@ -28,7 +28,7 @@ return new class extends Migration
         // Individual statement lines
         Schema::create('bank_statement_lines', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('import_id')->constrained('bank_statement_imports')->cascadeOnDelete();
+            $table->foreignId('import_id')->constrained('bank_statement_imports')->noActionOnDelete();
             $table->date('line_date');
             $table->string('description', 500)->nullable();
             $table->string('reference', 120)->nullable();

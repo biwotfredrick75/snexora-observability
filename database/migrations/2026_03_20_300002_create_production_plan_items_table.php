@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('production_plan_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('production_plan_id')->constrained('production_plans')->onDelete('cascade');
+            $table->foreignId('production_plan_id')->constrained('production_plans')->noActionOnDelete();
             $table->string('stock_id', 50);
             $table->string('description', 255)->nullable();
             $table->decimal('current_stock', 18, 6)->default(0);

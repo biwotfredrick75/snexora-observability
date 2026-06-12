@@ -54,7 +54,7 @@ return new class extends Migration
             $table->decimal('price_before_tax', 18, 4)->default(0);
             $table->decimal('discount_amt', 18, 4)->default(0);
             $table->decimal('line_total', 18, 4)->default(0);
-            $table->foreign('po_id')->references('id')->on('purchase_orders')->onDelete('cascade');
+            $table->foreign('po_id')->references('id')->on('purchase_orders')->noActionOnDelete();
         });
     }
 

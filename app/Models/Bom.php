@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Bom extends Model
@@ -11,13 +12,18 @@ class Bom extends Model
 
     protected $fillable = [
         'bom_no', 'product_code', 'description', 'version',
-        'standard_batch_qty', 'batch_unit', 'is_active', 'created_by',
+        'standard_batch_qty', 'batch_unit', 'mfg_type_id', 'is_active', 'created_by',
     ];
 
     protected $casts = [
         'standard_batch_qty' => 'float',
         'is_active'          => 'boolean',
     ];
+
+    public function mfgType(): BelongsTo
+    {
+        return $this->belongsTo(ManufacturingType::class, 'mfg_type_id');
+    }
 
     public function items(): HasMany
     {

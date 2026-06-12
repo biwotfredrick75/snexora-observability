@@ -55,7 +55,7 @@ class SupplierSeeder extends Seeder
         ];
 
         $globalIndex = 1;
-        $chunkSize   = 500;
+        $chunkSize   = 47; // SQL Server max 2100 params; 44 cols × 47 rows = 2068
 
         foreach ($specs as $spec) {
             $type   = $spec['type'];

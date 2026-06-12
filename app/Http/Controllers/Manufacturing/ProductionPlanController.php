@@ -245,10 +245,7 @@ class ProductionPlanController extends Controller
                     ->orderBy('sort_order')
                     ->get(['component_code', 'description', 'qty_required', 'unit'])
                     ->map(function ($c) use ($item) {
-                        // Resolve location from inventory_locations or items table
-                        $loc = DB::table('items')
-                            ->where('stock_id', $c->component_code)
-                            ->value('default_location') ?? '';
+                        $loc = '';
 
                         return [
                             'component_code' => $c->component_code,
@@ -384,10 +381,24 @@ class ProductionPlanController extends Controller
             'work_centre_id'=> 'nullable|integer|exists:work_centres,id',
         ]);
 
+        $openWo = WorkOrder::where('production_plan_item_id', $item->id)
+            ->whereNotIn('status', [WorkOrderService::STATUS_CLOSED])
+            ->first();
+        if ($openWo) {
+            return ApiResponse::validationError([
+                'error' => "Work order {$openWo->wo_no} ({$openWo->status}) is still open for this item. Close it before creating a new one.",
+            ]);
+        }
+
         $remaining = max(0, $item->planned_qty - $item->actual_qty);
 
         $wo = DB::transaction(function () use ($request, $plan, $item, $remaining) {
             $woItem = DB::table('items')->where('stock_id', $item->stock_id)->first();
+
+            // Inherit mfg_type_id: request override → BOM default
+            $mfgTypeId = $request->filled('mfg_type_id')
+                ? (int) $request->mfg_type_id
+                : DB::table('boms')->where('id', $request->bom_id)->value('mfg_type_id');
 
             $wo = WorkOrder::create([
                 'production_plan_id'      => $plan->id,
@@ -396,6 +407,7 @@ class ProductionPlanController extends Controller
                 'product_code'            => $item->stock_id,
                 'product_description'     => $item->description ?? ($woItem?->description ?? $item->stock_id),
                 'bom_id'                  => $request->bom_id,
+                'mfg_type_id'             => $mfgTypeId,
                 'work_centre_id'          => $request->work_centre_id ?? null,
                 'planned_qty'             => $remaining > 0 ? $remaining : $item->planned_qty,
                 'unit'                    => $woItem?->units ?? '',

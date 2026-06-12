@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class ProductionPlan extends Model
 {
     protected $fillable = [
-        'plan_no', 'status', 'production_location',
+        'mfg_type_id', 'plan_no', 'status', 'production_location',
         'plan_date', 'target_completion_date', 'memo',
         'created_by', 'submitted_by', 'approved_by', 'supervisor_approved_by',
         'submitted_at', 'approved_at', 'supervisor_approved_at',

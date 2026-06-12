@@ -28,7 +28,7 @@ return new class extends Migration
         Schema::create('purchase_quotation_items', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('quotation_id');
-            $table->foreign('quotation_id')->references('id')->on('purchase_quotations')->onDelete('cascade');
+            $table->foreign('quotation_id')->references('id')->on('purchase_quotations')->noActionOnDelete();
             $table->string('stock_id', 20);
             $table->string('description', 255)->default('');
             $table->decimal('qty_required', 14, 4);
@@ -39,7 +39,7 @@ return new class extends Migration
         Schema::create('purchase_quotation_suppliers', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('quotation_id');
-            $table->foreign('quotation_id')->references('id')->on('purchase_quotations')->onDelete('cascade');
+            $table->foreign('quotation_id')->references('id')->on('purchase_quotations')->noActionOnDelete();
             $table->unsignedInteger('supplier_id')->index();
             $table->string('status', 20)->default('pending'); // pending → received → selected
             $table->date('received_date')->nullable();
@@ -51,7 +51,7 @@ return new class extends Migration
         Schema::create('purchase_quotation_item_prices', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('quotation_supplier_id');
-            $table->foreign('quotation_supplier_id')->references('id')->on('purchase_quotation_suppliers')->onDelete('cascade');
+            $table->foreign('quotation_supplier_id')->references('id')->on('purchase_quotation_suppliers')->noActionOnDelete();
             $table->string('stock_id', 20);
             $table->decimal('unit_price', 14, 4)->default(0);
             $table->decimal('discount_amt', 14, 4)->default(0);

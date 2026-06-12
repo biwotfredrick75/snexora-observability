@@ -181,7 +181,7 @@ class SalesAnalyticsController extends Controller
             ->leftJoin('sales_areas as sa', 'sa.id', '=', 'cb.sales_area_id')
             ->whereBetween('si.invoice_date', [$from, $to])
             ->whereIn('si.status', ['posted', 'paid', 'partial'])
-            ->selectRaw('COALESCE(sa.area_name, "Unassigned") AS area_name, SUM(si.amount_total) AS amount, COUNT(*) AS inv_count')
+            ->selectRaw("COALESCE(sa.area_name, 'Unassigned') AS area_name, SUM(si.amount_total) AS amount, COUNT(*) AS inv_count")
             ->groupBy('sa.id', 'sa.area_name')
             ->orderByDesc('amount')
             ->get();

@@ -9,7 +9,7 @@ class SupplierCreditNote extends Model
     protected $table = 'supplier_credit_notes';
 
     protected $fillable = [
-        'scn_no', 'supplier_id', 'date', 'due_date', 'reference', 'supplier_ref',
+        'scn_no', 'supplier_id', 'date', 'due_date', 'reference', 'source_invoice_no', 'supplier_ref',
         'terms', 'tax_group', 'dimension_id', 'dimension2_id',
         'items_total', 'gl_total', 'total', 'memo', 'status', 'raised_by',
     ];

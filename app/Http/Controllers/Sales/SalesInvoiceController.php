@@ -13,10 +13,13 @@ use App\Models\GldTransaction;
 use App\Models\SalesInvoice;
 use App\Models\SalesInvoiceItem;
 use App\Models\StockMovement;
+use App\Services\Etims\EtimsService;
+use App\Services\Inventory\StockMovementService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use App\Traits\ValidatesSellingPrice;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class SalesInvoiceController extends Controller
 {
@@ -113,11 +116,6 @@ class SalesInvoiceController extends Controller
             'items.*.unit'         => 'nullable|string|max:20',
             'items.*.standard_cost'=> 'nullable|numeric|min:0',
         ]);
-
-        $priceErrors = $this->checkItemPrices($validated['items']);
-        if (! empty($priceErrors)) {
-            return ApiResponse::validationError($priceErrors);
-        }
 
         return DB::transaction(function () use ($validated) {
             $invoice = SalesInvoice::create([
@@ -358,7 +356,7 @@ public function showCredit(int $id): JsonResponse
         $company   = DB::table('company_preferences')->first();
         $glSetting = DB::table('gl_settings')->first();
 
-        return DB::transaction(function () use ($invoice, $company, $glSetting) {
+        $placed = DB::transaction(function () use ($invoice, $company, $glSetting) {
             $invoice->update(['status' => 'placed']);
 
             $createdBy  = auth()->user()?->user_id ?? 'system';
@@ -367,10 +365,10 @@ public function showCredit(int $id): JsonResponse
                 ? $invoice->invoice_date->toDateString()
                 : $invoice->invoice_date;
 
-            // Resolve stock location code for movements
+            // Resolve stock location code for movements; fall back to first active location
             $locCode = $invoice->location_id
                 ? DB::table('inventory_locations')->where('id', $invoice->location_id)->value('code')
-                : null;
+                : DB::table('inventory_locations')->where('inactive', 0)->value('code');
 
             $totalGrossSales = 0.0;
             $totalDiscounts  = 0.0;
@@ -388,24 +386,22 @@ public function showCredit(int $id): JsonResponse
                     $standardCost = (float) ($itemCost ?? 0);
                 }
 
-                // ── Stock movement: goods out ─────────────────────────────────
-                StockMovement::create([
-                    'trans_no'      => $invoice->id,
-                    'stock_id'      => $invoiceItem->stock_id,
-                    'type'          => StockMovement::TYPE_DELIVERY,
-                    'loc_code'      => $locCode,
-                    'tran_date'     => $tranDate,
-                    'date_moved'    => $tranDate,
-                    'qty'           => -$qty,
-                    'price'         => $invoiceItem->price,
-                    'standard_cost' => $standardCost,
-                    'reference'     => $invNo,
-                    'comments'      => $invoice->comments,
-                    'user_name'     => $createdBy,
-                    'vehicle'       => $invoice->vehicle ?? '',
-                    'shift'         => $invoice->shift   ?? '',
-                    'approved'      => 1,
-                ]);
+                // ── Stock movement: goods out — FIFO batch deduction ──────────
+                StockMovementService::deductFifo(
+                    $invoiceItem->stock_id,
+                    $locCode,
+                    $qty,
+                    [
+                        'trans_no'  => $invoice->id,
+                        'type'      => StockMovement::TYPE_DELIVERY,
+                        'tran_date' => $tranDate,
+                        'reference' => $invNo,
+                        'user_name' => $createdBy,
+                        'comments'  => $invoice->comments ?? '',
+                        'vehicle'   => $invoice->vehicle  ?? '',
+                        'shift'     => $invoice->shift    ?? '',
+                    ]
+                );
 
                 $item = DB::table('items')->where('stock_id', $invoiceItem->stock_id)
                     ->select('cogs_account', 'inventory_account', 'sales_account',
@@ -565,8 +561,42 @@ public function showCredit(int $id): JsonResponse
             $alloc->applyUnallocatedPayments($freshInvoice, $tranDate, $createdBy);
             $alloc->applyUnallocatedCreditNotes($freshInvoice, $tranDate, $createdBy);
 
-            return ApiResponse::success($invoice->fresh(), 'Sales invoice placed');
+            broadcast(new DashboardEvent('order_entry', 'placed', ['inv_no' => $invoice->inv_no, 'amount' => $invoice->amount_total]));
+            return $invoice->fresh();
         });
+
+        if (! in_array($placed->etims_status, ['signed', 'stamped'])) {
+            try {
+                app(EtimsService::class)->stampInvoice($placed);
+            } catch (\Throwable $e) {
+                Log::error('eTIMS stampInvoice failed: ' . $e->getMessage());
+            }
+        }
+
+        return ApiResponse::success($placed->fresh(), 'Sales invoice placed');
+    }
+
+    public function stamp(int $id): JsonResponse
+    {
+        $invoice = SalesInvoice::with('items')->find($id);
+        if (! $invoice) {
+            return ApiResponse::notFound('Sales invoice not found');
+        }
+        if ($invoice->status !== 'placed') {
+            return ApiResponse::error('Only placed invoices can be stamped', 422);
+        }
+        if (in_array($invoice->etims_status, ['signed', 'stamped'])) {
+            return ApiResponse::error('Invoice has already been submitted to KRA eTIMS', 422);
+        }
+
+        try {
+            app(EtimsService::class)->stampInvoice($invoice);
+        } catch (\Throwable $e) {
+            Log::error('Manual eTIMS stamp failed: ' . $e->getMessage());
+            return ApiResponse::error('eTIMS stamping failed: ' . $e->getMessage(), 502);
+        }
+
+        return ApiResponse::success($invoice->fresh(), 'Invoice submitted to KRA eTIMS');
     }
 
     public function cancel(int $id): JsonResponse
@@ -599,11 +629,6 @@ public function showCredit(int $id): JsonResponse
             'unit'          => 'nullable|string|max:20',
             'standard_cost' => 'nullable|numeric|min:0',
         ]);
-
-        $priceError = $this->checkSingleItemPrice($validated['stock_id'], (float) $validated['price']);
-        if ($priceError) {
-            return ApiResponse::validationError(['price' => $priceError]);
-        }
 
         $lineTotal = $this->calcLineTotal($validated);
 
@@ -728,13 +753,13 @@ public function showCredit(int $id): JsonResponse
 
         $items = $invoice->items->map(function ($item) use ($id) {
             $alreadyReturned = \App\Models\CreditNoteItem::whereHas('creditNote', function ($q) use ($id) {
-                    $q->where('inv_id', $id)->where('cn_type', 'return')->whereIn('status', ['placed']);
+                    $q->where('inv_id', $id)->whereIn('cn_type', ['return', 'return_to_store', 'damage'])->whereIn('status', ['placed']);
                 })
                 ->where('stock_id', $item->stock_id)
                 ->sum('qty');
 
-            $originalQty    = (float) $item->qty + (float) $alreadyReturned; // qty on invoice already decremented on place
-            $returnableQty  = max(0, (float) $item->qty);
+            $originalQty    = (float) $item->qty + (float) $alreadyReturned;
+            $returnableQty  = max(0, (float) $item->qty - (float) $alreadyReturned);
 
             $standardCost = (float) (DB::table('items')
                 ->where('stock_id', $item->stock_id)

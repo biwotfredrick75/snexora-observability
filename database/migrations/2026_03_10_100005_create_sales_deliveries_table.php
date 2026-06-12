@@ -14,7 +14,7 @@ return new class extends Migration
             $table->string('debtor_no', 10);
             $table->foreign('debtor_no')->references('debtor_no')->on('customers');
             $table->unsignedBigInteger('branch_id')->nullable();
-            $table->foreign('branch_id')->references('id')->on('customer_branches')->nullOnDelete();
+            $table->foreign('branch_id')->references('id')->on('customer_branches')->noActionOnDelete();
             $table->date('delivery_date');
             $table->date('invoice_before')->nullable();
             $table->integer('payment_terms')->nullable();
@@ -41,7 +41,7 @@ return new class extends Migration
         Schema::create('sales_delivery_items', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('delivery_id');
-            $table->foreign('delivery_id')->references('id')->on('sales_deliveries')->onDelete('cascade');
+            $table->foreign('delivery_id')->references('id')->on('sales_deliveries')->noActionOnDelete();
             $table->string('stock_id', 20);
             $table->string('description', 200);
             $table->decimal('qty', 12, 2);

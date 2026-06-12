@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class PurchaseOrder extends Model
 {
     protected $fillable = [
-        'po_no', 'type', 'supplier_id', 'reference', 'supplier_reference',
+        'po_no', 'type', 'supplier_id', 'source_grn_id', 'reference', 'supplier_reference',
         'order_date', 'delivery_date', 'due_date', 'location_id', 'receive_into',
         'payment_terms', 'currency', 'exchange_rate', 'status', 'raised_by',
         'hod_approval_by', 'finance_approval_by', 'ceo_approval_by',
@@ -23,5 +23,10 @@ class PurchaseOrder extends Model
     public function supplier()
     {
         return $this->belongsTo(Supplier::class, 'supplier_id', 'supplierId');
+    }
+
+    public function sourceGrn()
+    {
+        return $this->belongsTo(PurchaseOrder::class, 'source_grn_id');
     }
 }

@@ -24,7 +24,7 @@ class StockMovement extends Model
         'trans_no', 'stock_id', 'type', 'loc_code', 'loc_code_from',
         'tran_date', 'date_moved', 'qty', 'price', 'standard_cost',
         'reference', 'comments', 'user_name', 'vehicle', 'shift',
-        'route_id', 'tid', 'tidd', 'ref_no', 'gate_pass_no', 'batch_no',
+        'route_id', 'tid', 'tidd', 'ref_no', 'gate_pass_no', 'batch_no', 'batch_new',
         'approved', 'unique_key',
     ];
 }

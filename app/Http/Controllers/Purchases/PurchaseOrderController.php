@@ -10,6 +10,7 @@ use App\Models\GlSetting;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\StockMovement;
+use App\Services\Inventory\StockMovementService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -63,6 +64,7 @@ class PurchaseOrderController extends Controller
                 'po_no'               => 'TEMP-' . uniqid(),
                 'type'                => $type,
                 'supplier_id'         => $request->supplier_id,
+                'source_grn_id'       => $request->source_grn_id ?? null,
                 'reference'           => $request->reference ?? '',
                 'supplier_reference'  => $request->supplier_reference ?? '',
                 'order_date'          => $request->order_date,
@@ -91,6 +93,7 @@ class PurchaseOrderController extends Controller
 
                 PurchaseOrderItem::create([
                     'po_id'                 => $po->id,
+                    'grn_item_id'           => $item['grn_item_id'] ?? null,
                     'stock_id'              => $item['stock_id'],
                     'description'           => $item['description'] ?? '',
                     'qty'                   => $qty,
@@ -111,8 +114,11 @@ class PurchaseOrderController extends Controller
 
     public function show(int $id): JsonResponse
     {
-        $po = PurchaseOrder::with(['items', 'supplier:supplierId,supplierName,supplierReference,currencyCode,paymentTerms,creditLimit'])
-            ->findOrFail($id);
+        $po = PurchaseOrder::with([
+            'items',
+            'supplier:supplierId,supplierName,supplierReference,currencyCode,paymentTerms,creditLimit',
+            'sourceGrn:id,po_no,order_date',
+        ])->findOrFail($id);
         return ApiResponse::success($po, 'Order retrieved');
     }
 
@@ -158,6 +164,7 @@ class PurchaseOrderController extends Controller
 
                 PurchaseOrderItem::create([
                     'po_id'                 => $po->id,
+                    'grn_item_id'           => $item['grn_item_id'] ?? null,
                     'stock_id'              => $item['stock_id'],
                     'description'           => $item['description'] ?? '',
                     'qty'                   => $qty,
@@ -206,6 +213,12 @@ class PurchaseOrderController extends Controller
                     return ApiResponse::success($po->fresh(['items', 'supplier:supplierId,supplierName,supplierReference']), 'GRN posted — stock & GL updated');
                 }
 
+                if ($po->type === 'invoice') {
+                    $this->postDirectInvoice($po, $approver);
+                    $po->update(['status' => 'received']);
+                    return ApiResponse::success($po->fresh(['items', 'supplier:supplierId,supplierName,supplierReference']), 'Invoice approved — stock & GL posted');
+                }
+
                 $po->update(['status' => 'ceo_approved']);
                 return ApiResponse::success($po->fresh(['items', 'supplier:supplierId,supplierName,supplierReference']), 'Order approved — no approvals configured');
             });
@@ -251,16 +264,82 @@ class PurchaseOrderController extends Controller
                 'ceo_approval_date' => now()->toDateString(),
             ];
 
-            // For GRN type: post stock movements + GL entries on CEO approval
             if ($po->type === 'grn') {
                 $this->postGrnReceipt($po, $approver);
                 $po->update(array_merge($approvals, ['status' => 'received']));
                 return ApiResponse::success($po->fresh(), 'GRN approved and goods received');
             }
 
+            if ($po->type === 'invoice') {
+                $this->postDirectInvoice($po, $approver);
+                $po->update(array_merge($approvals, ['status' => 'received']));
+                return ApiResponse::success($po->fresh(), 'Invoice approved — stock & GL posted');
+            }
+
             $po->update(array_merge($approvals, ['status' => 'ceo_approved']));
             return ApiResponse::success($po->fresh(), 'CEO/Operations approved');
         });
+    }
+
+    // ── Receive goods for standard PO (type='po') after CEO approval ─────────
+    public function receiveGoods(int $id): JsonResponse
+    {
+        $po = PurchaseOrder::with('items')->findOrFail($id);
+        if ($po->type !== 'po') return ApiResponse::error('Only standard purchase orders can use this receive flow', 422);
+        if ($po->status !== 'ceo_approved') return ApiResponse::error('Order must be CEO approved before receiving goods', 422);
+
+        return DB::transaction(function () use ($po) {
+            $approver = auth()->user()?->user_id ?? 'system';
+            $this->postGrnReceipt($po, $approver);
+            $po->update(['status' => 'received']);
+            return ApiResponse::success($po->fresh(), 'Goods received — stock & GL posted');
+        });
+    }
+
+    // ── GL view for purchase orders (GRN / Invoice) ───────────────────────────
+    public function glTransactions(int $id): JsonResponse
+    {
+        $po = PurchaseOrder::with(['items', 'supplier:supplierId,supplierName'])->findOrFail($id);
+
+        $glType = $po->type === 'invoice' ? 25 : StockMovement::TYPE_GRN; // 25 = direct invoice GL type
+
+        $glEntries = DB::table('gld_transactions as g')
+            ->leftJoin('0_chart_master as cm', 'cm.account_code', '=', 'g.account_code')
+            ->where('g.reference', $po->po_no)
+            ->where('g.type', $glType)
+            ->select(
+                'g.account_code',
+                DB::raw('COALESCE(cm.account_name, g.account_code) AS account_name'),
+                'g.narration as memo',
+                'g.tran_date',
+                'g.reference',
+                DB::raw('CASE WHEN g.amount >= 0 THEN g.amount ELSE 0 END as debit'),
+                DB::raw('CASE WHEN g.amount < 0 THEN ABS(g.amount) ELSE 0 END as credit'),
+                'g.dimension_id',
+                'g.dimension2_id',
+            )
+            ->orderBy('g.id')
+            ->get();
+
+        $company = DB::table('company_preferences')->first();
+
+        return ApiResponse::success([
+            'order'      => [
+                'id'                 => $po->id,
+                'po_no'              => $po->po_no,
+                'reference'          => $po->reference,
+                'supplier_reference' => $po->supplier_reference,
+                'order_date'         => $po->order_date,
+                'supplier'           => $po->supplier?->supplierName,
+            ],
+            'gl_entries' => $glEntries,
+            'company'    => $company ? [
+                'name'    => $company->name,
+                'phone'   => $company->phone,
+                'address' => $company->address,
+                'email'   => $company->email,
+            ] : [],
+        ], 'GL transactions');
     }
 
     private function postGrnReceipt(PurchaseOrder $po, string $approver): void
@@ -270,10 +349,13 @@ class PurchaseOrderController extends Controller
         $glSetting = GlSetting::first();
         $grnClearing = $glSetting?->grn_clearing_account ?: 'GRN-CLEARING';
 
-        foreach ($po->items as $item) {
+        foreach ($po->items as $idx => $item) {
             $qty  = (float) $item->qty;
             $cost = (float) $item->price_before_tax;
             $lineAmount = round($qty * $cost, 4);
+
+            // Batch number uniquely identifies this GRN line: {po_no}-{1-based line}
+            $batchNo = substr($po->po_no . '-' . ($idx + 1), 0, 50);
 
             // Resolve inventory GL account from item master
             $itemRecord = DB::table('items')
@@ -283,7 +365,7 @@ class PurchaseOrderController extends Controller
 
             $inventoryAccount = $itemRecord?->inventory_account ?: ($glSetting?->items_inventory_account ?: 'INVENTORY');
 
-            // ── Stock movement: goods in (positive qty) ──────────────────────
+            // ── Stock movement: goods in (positive qty) with batch stamp ─────
             StockMovement::create([
                 'trans_no'      => $po->id,
                 'stock_id'      => $item->stock_id,
@@ -298,6 +380,8 @@ class PurchaseOrderController extends Controller
                 'comments'      => $po->internal_memo ?: null,
                 'user_name'     => $approver,
                 'approved'      => 1,
+                'batch_no'      => $batchNo,
+                'batch_new'     => 1,
             ]);
 
             if ($lineAmount == 0) continue;
@@ -332,6 +416,77 @@ class PurchaseOrderController extends Controller
         }
     }
 
+    private function postDirectInvoice(PurchaseOrder $po, string $approver): void
+    {
+        $locCode   = $po->receive_into ?: $po->location_id;
+        $tranDate  = $po->delivery_date ?? $po->order_date ?? now()->toDateString();
+        $glSetting = GlSetting::first();
+        $apAccount = $glSetting?->supplier_payable_account ?: '201010';
+        $glType    = 25; // direct supplier invoice
+
+        foreach ($po->items as $idx => $item) {
+            $qty        = (float) $item->qty;
+            $cost       = (float) $item->price_before_tax;
+            $lineAmount = round($qty * $cost - (float) $item->discount_amt, 4);
+
+            $batchNo = substr($po->po_no . '-' . ($idx + 1), 0, 50);
+
+            $itemRecord = DB::table('items')
+                ->where('stock_id', $item->stock_id)
+                ->select('inventory_account', 'dimension_id', 'dimension2_id')
+                ->first();
+
+            $inventoryAccount = $itemRecord?->inventory_account ?: ($glSetting?->items_inventory_account ?: 'INVENTORY');
+
+            // Stock movement: goods in
+            StockMovement::create([
+                'trans_no'      => $po->id,
+                'stock_id'      => $item->stock_id,
+                'type'          => $glType,
+                'loc_code'      => $locCode,
+                'tran_date'     => $tranDate,
+                'date_moved'    => $tranDate,
+                'qty'           => $qty,
+                'price'         => $cost,
+                'standard_cost' => $cost,
+                'reference'     => $po->po_no,
+                'comments'      => $po->internal_memo ?: null,
+                'user_name'     => $approver,
+                'approved'      => 1,
+                'batch_no'      => $batchNo,
+                'batch_new'     => 1,
+            ]);
+
+            if ($lineAmount == 0) continue;
+
+            // GL: DR Inventory account
+            GldTransaction::create([
+                'trans_no'      => $po->id,
+                'type'          => $glType,
+                'tran_date'     => $tranDate,
+                'account_code'  => $inventoryAccount,
+                'reference'     => $po->po_no,
+                'narration'     => "Direct Invoice — {$item->description} ({$po->po_no})",
+                'amount'        => $lineAmount,
+                'created_by'    => $approver,
+                'dimension_id'  => $itemRecord?->dimension_id  ?? null,
+                'dimension2_id' => $itemRecord?->dimension2_id ?? null,
+            ]);
+
+            // GL: CR Accounts Payable
+            GldTransaction::create([
+                'trans_no'      => $po->id,
+                'type'          => $glType,
+                'tran_date'     => $tranDate,
+                'account_code'  => $apAccount,
+                'reference'     => $po->po_no,
+                'narration'     => "AP — {$po->supplier?->supplierName} ({$po->po_no})",
+                'amount'        => -$lineAmount,
+                'created_by'    => $approver,
+            ]);
+        }
+    }
+
     public function reject(int $id, Request $request): JsonResponse
     {
         $po = PurchaseOrder::findOrFail($id);
@@ -343,5 +498,97 @@ class PurchaseOrderController extends Controller
             'internal_memo'=> ($request->reason ?? '') . "\n" . $po->internal_memo,
         ]);
         return ApiResponse::success($po, 'Order rejected');
+    }
+
+    /**
+     * GET /purchases/purchase-orders/grn-items-for-invoice?supplier_id=
+     *
+     * Returns GRN items received but not yet fully invoiced for a supplier.
+     * Used by the supplier invoice entry form to populate the items table.
+     */
+    public function grnItemsForInvoice(Request $request): JsonResponse
+    {
+        $request->validate(['supplier_id' => 'required|integer']);
+
+        $supplierId = $request->supplier_id;
+
+        // Find received GRNs for this supplier
+        $grnIds = DB::table('purchase_orders')
+            ->where('type', 'grn')
+            ->where('supplier_id', $supplierId)
+            ->where('status', 'received')
+            ->pluck('id');
+
+        if ($grnIds->isEmpty()) {
+            return ApiResponse::success([], 'No received GRN items found');
+        }
+
+        // Get all GRN items
+        $grnItems = DB::table('purchase_order_items as poi')
+            ->join('purchase_orders as po', 'po.id', '=', 'poi.po_id')
+            ->whereIn('poi.po_id', $grnIds)
+            ->select(
+                'poi.id as grn_item_id',
+                'poi.po_id as grn_po_id',
+                'po.po_no as grn_no',
+                'poi.stock_id',
+                'poi.description',
+                DB::raw('DATE(po.delivery_date) as received_on'),
+                DB::raw('poi.qty as qty_received'),
+                'poi.price_before_tax',
+                'poi.unit'
+            )
+            ->get();
+
+        // Get quantities already invoiced — primary: via grn_item_id link
+        $invoicedByGrnItem = DB::table('purchase_order_items as poi')
+            ->join('purchase_orders as po', 'po.id', '=', 'poi.po_id')
+            ->where('po.type', 'invoice')
+            ->whereIn('po.status', ['submitted', 'hod_approved', 'finance_approved', 'received', 'ceo_approved'])
+            ->whereNotNull('poi.grn_item_id')
+            ->whereIn('poi.grn_item_id', $grnItems->pluck('grn_item_id'))
+            ->select('poi.grn_item_id', DB::raw('SUM(poi.qty) as qty_invoiced'))
+            ->groupBy('poi.grn_item_id')
+            ->get()
+            ->keyBy('grn_item_id');
+
+        // Fallback: via source_grn_id on the invoice (items without grn_item_id)
+        $invoicedBySourceGrn = DB::table('purchase_order_items as poi')
+            ->join('purchase_orders as po', 'po.id', '=', 'poi.po_id')
+            ->where('po.type', 'invoice')
+            ->whereIn('po.status', ['submitted', 'hod_approved', 'finance_approved', 'received', 'ceo_approved'])
+            ->whereNull('poi.grn_item_id')
+            ->whereIn('po.source_grn_id', $grnIds)
+            ->select('po.source_grn_id', 'poi.stock_id', DB::raw('SUM(poi.qty) as qty_invoiced'))
+            ->groupBy('po.source_grn_id', 'poi.stock_id')
+            ->get()
+            ->groupBy('source_grn_id');
+
+        $result = $grnItems->map(function ($item) use ($invoicedByGrnItem, $invoicedBySourceGrn) {
+            $invoiced = (float)($invoicedByGrnItem[$item->grn_item_id]->qty_invoiced ?? 0);
+            // Add fallback from source_grn_id match
+            if ($invoiced == 0 && $invoicedBySourceGrn->has($item->grn_po_id)) {
+                $match = $invoicedBySourceGrn[$item->grn_po_id]->firstWhere('stock_id', $item->stock_id);
+                $invoiced = (float)($match->qty_invoiced ?? 0);
+            }
+            $yetToInvoice = max(0, (float)$item->qty_received - $invoiced);
+
+            return [
+                'grn_item_id'     => $item->grn_item_id,
+                'grn_po_id'       => $item->grn_po_id,
+                'grn_no'          => $item->grn_no,
+                'stock_id'        => $item->stock_id,
+                'description'     => $item->description,
+                'received_on'     => $item->received_on,
+                'qty_received'    => (float)$item->qty_received,
+                'qty_invoiced'    => $invoiced,
+                'qty_yet_to_invoice' => $yetToInvoice,
+                'price_before_tax'=> (float)$item->price_before_tax,
+                'unit'            => $item->unit ?? '',
+                'line_total'      => round($yetToInvoice * (float)$item->price_before_tax, 4),
+            ];
+        })->filter(fn($r) => $r['qty_yet_to_invoice'] > 0)->values();
+
+        return ApiResponse::success($result, 'GRN items retrieved');
     }
 }

@@ -46,7 +46,7 @@ class StockTakeController extends Controller
             'memo'        => 'nullable|string',
             'items'       => 'required|array|min:1',
             'items.*.stock_id'    => 'required|string|max:20',
-            'items.*.system_qty'  => 'nullable|numeric|min:0',
+            'items.*.system_qty'  => 'nullable|numeric',
             'items.*.counted_qty' => 'nullable|numeric|min:0',
             'items.*.unit'        => 'nullable|string|max:20',
         ]);

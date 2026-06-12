@@ -10,9 +10,13 @@ return new class extends Migration
 {
     public function up(): void
     {
-        // FK rewiring (milk_grn_batches → purchase_orders,
-        // milk_grn_items → purchase_order_items) was applied in migration 110006.
-        // milk_supp_invoice_items.po_detail_item_id has no FK (plain nullable column).
+        // Drop FKs from 110006 that reference the tables we're about to drop.
+        Schema::table('milk_grn_items', function (Blueprint $table) {
+            $table->dropForeign(['po_detail_item_id']);
+        });
+        Schema::table('milk_grn_batches', function (Blueprint $table) {
+            $table->dropForeign(['purch_order_id']);
+        });
 
         // Drop the now-redundant milk-specific purch tables.
         Schema::dropIfExists('milk_purch_order_details');
@@ -35,7 +39,7 @@ return new class extends Migration
             $table->string('supplier_description', 200)->default('');
             $table->string('tid', 50)->nullable();
             $table->timestamps();
-            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->cascadeOnDelete();
+            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->noActionOnDelete();
         });
 
         // Recreate milk_purch_orders
@@ -58,8 +62,8 @@ return new class extends Migration
             $table->string('source_from', 50)->default('Manual');
             $table->string('tid', 50)->nullable();
             $table->timestamps();
-            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->cascadeOnDelete();
-            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->cascadeOnDelete();
+            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->noActionOnDelete();
+            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->noActionOnDelete();
         });
 
         // Recreate milk_purch_order_details
@@ -81,24 +85,24 @@ return new class extends Migration
             $table->decimal('quantity_received', 12, 3)->default(0);
             $table->string('tid', 50)->nullable();
             $table->timestamps();
-            $table->foreign('purch_order_id')->references('id')->on('milk_purch_orders')->cascadeOnDelete();
-            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->cascadeOnDelete();
+            $table->foreign('purch_order_id')->references('id')->on('milk_purch_orders')->noActionOnDelete();
+            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->noActionOnDelete();
         });
 
         // Restore FKs to the milk-specific tables
         Schema::table('milk_supp_invoice_items', function (Blueprint $table) {
             $table->dropForeign(['po_detail_item_id']);
-            $table->foreign('po_detail_item_id')->references('id')->on('milk_purch_order_details')->nullOnDelete();
+            $table->foreign('po_detail_item_id')->references('id')->on('milk_purch_order_details')->noActionOnDelete();
         });
 
         Schema::table('milk_grn_items', function (Blueprint $table) {
             $table->dropForeign(['po_detail_item_id']);
-            $table->foreign('po_detail_item_id')->references('id')->on('milk_purch_order_details')->nullOnDelete();
+            $table->foreign('po_detail_item_id')->references('id')->on('milk_purch_order_details')->noActionOnDelete();
         });
 
         Schema::table('milk_grn_batches', function (Blueprint $table) {
             $table->dropForeign(['purch_order_id']);
-            $table->foreign('purch_order_id')->references('id')->on('milk_purch_orders')->nullOnDelete();
+            $table->foreign('purch_order_id')->references('id')->on('milk_purch_orders')->noActionOnDelete();
         });
     }
 };

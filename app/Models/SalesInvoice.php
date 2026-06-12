@@ -16,6 +16,8 @@ class SalesInvoice extends Model
         'amount_total', 'status', 'dimension_id', 'dimension2_id',
         'location_id', 'vehicle', 'shift', 'deliver_to', 'address',
         'contact_phone', 'customer_ref', 'comments', 'shipping_company_id', 'created_by',
+        'etims_status', 'etims_invc_no', 'etims_rpt_no', 'etims_intr_data', 'etims_rct_sign',
+        'etims_rcpt_date', 'etims_mrc_no', 'etims_qr_path', 'etims_stamped_at', 'etims_error',
     ];
 
     protected $casts = [

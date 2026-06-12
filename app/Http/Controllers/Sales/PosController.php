@@ -118,7 +118,7 @@ class PosController extends Controller
         $itemList = $query->orderBy('description')
             ->select(['stock_id', 'description', 'units', 'bar_code',
                       'purchase_cost', 'material_cost', 'labour_cost', 'overhead_cost'])
-            ->limit(50)
+            ->limit(300)
             ->get();
 
         $stockIds = $itemList->pluck('stock_id');
@@ -137,6 +137,8 @@ class PosController extends Controller
             ->orderBy('id')
             ->get()
             ->groupBy('stock_id');
+
+        $requireStock = filter_var($request->get('require_stock', true), FILTER_VALIDATE_BOOLEAN);
 
         $items = $itemList->map(function ($item) use ($stockQtys, $allPrices, $salesTypeName) {
             $priceRecords  = $allPrices->get($item->stock_id, collect());
@@ -160,7 +162,13 @@ class PosController extends Controller
                 'tax_rate'      => 16.0,
                 'qty_on_hand'   => (float) ($stockQtys[$item->stock_id] ?? 0),
             ];
-        })->filter(fn ($item) => $item['qty_on_hand'] > 0)->values();
+        });
+
+        if ($requireStock) {
+            $items = $items->filter(fn ($item) => $item['qty_on_hand'] > 0);
+        }
+
+        $items = $items->values();
 
         return ApiResponse::success($items, 'Items retrieved');
     }

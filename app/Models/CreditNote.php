@@ -16,6 +16,8 @@ class CreditNote extends Model
         'sub_total', 'amount_total', 'write_off_amount',
         'unallocated_amount', 'allocated_amount',
         'status', 'comments', 'created_by',
+        'etims_status', 'etims_invc_no', 'etims_rpt_no', 'etims_intr_data', 'etims_rct_sign',
+        'etims_rcpt_date', 'etims_mrc_no', 'etims_qr_path', 'etims_stamped_at', 'etims_error',
     ];
 
     protected $casts = [

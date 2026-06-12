@@ -25,8 +25,8 @@ return new class extends Migration
             $table->string('created_by')->nullable();
             $table->timestamps();
 
-            $table->foreign('route_id')->references('id')->on('milk_routes')->nullOnDelete();
-            $table->foreign('shift_id')->references('id')->on('milk_collection_shifts')->nullOnDelete();
+            $table->foreign('route_id')->references('id')->on('milk_routes')->noActionOnDelete();
+            $table->foreign('shift_id')->references('id')->on('milk_collection_shifts')->noActionOnDelete();
         });
     }
 

@@ -30,7 +30,7 @@ return new class extends Migration
 
         Schema::create('bank_payment_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('payment_id')->constrained('bank_payments')->cascadeOnDelete();
+            $table->foreignId('payment_id')->constrained('bank_payments')->noActionOnDelete();
             $table->string('account_code', 20);
             $table->unsignedBigInteger('dimension_id')->nullable();
             $table->unsignedBigInteger('dimension2_id')->nullable();
@@ -61,7 +61,7 @@ return new class extends Migration
 
         Schema::create('bank_deposit_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('deposit_id')->constrained('bank_deposits')->cascadeOnDelete();
+            $table->foreignId('deposit_id')->constrained('bank_deposits')->noActionOnDelete();
             $table->string('account_code', 20);
             $table->unsignedBigInteger('dimension_id')->nullable();
             $table->unsignedBigInteger('dimension2_id')->nullable();

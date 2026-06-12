@@ -19,7 +19,7 @@ return new class extends Migration
             $table->boolean('inactive')->default(false);
             $table->timestamps();
 
-            $table->foreign('packaging_type_id')->references('id')->on('packaging_types')->nullOnDelete();
+            $table->foreign('packaging_type_id')->references('id')->on('packaging_types')->noActionOnDelete();
         });
     }
 

@@ -82,6 +82,34 @@ class WorkOrderService
             'total_material_cost' => round($totalMaterialCost, 4),
             'released_by'         => $user,
         ]);
+
+        // Initialize process stages from the linked manufacturing type
+        if ($wo->mfg_type_id) {
+            $mfgType = \App\Models\ManufacturingType::find($wo->mfg_type_id);
+            if ($mfgType && ! empty($mfgType->process_stages)) {
+                // Clear any previously generated stages (safe to re-release)
+                DB::table('work_order_stages')->where('work_order_id', $wo->id)->delete();
+
+                $stages = collect($mfgType->process_stages)->sortBy('order');
+                $first  = true;
+                foreach ($stages as $stage) {
+                    DB::table('work_order_stages')->insert([
+                        'work_order_id'       => $wo->id,
+                        'stage_order'         => (int) $stage['order'],
+                        'stage_code'          => $stage['code'],
+                        'stage_name'          => $stage['name'],
+                        'produces_byproducts' => (bool) ($stage['produces_byproducts'] ?? false),
+                        'is_final'            => (bool) ($stage['is_final'] ?? false),
+                        'status'              => $first ? 'active' : 'pending',
+                        'started_by'          => $first ? $user : null,
+                        'started_at'          => $first ? now() : null,
+                        'created_at'          => now(),
+                        'updated_at'          => now(),
+                    ]);
+                    $first = false;
+                }
+            }
+        }
     }
 
     /**
@@ -96,74 +124,87 @@ class WorkOrderService
      *
      * Returns array with issue summary so the controller can inform the caller.
      */
-    public function issueAll(WorkOrder $wo, string $user): array
+    public function issueAll(WorkOrder $wo, string $user, ?float $targetQty = null): array
     {
         if (! in_array($wo->status, [self::STATUS_RELEASED, self::STATUS_IN_PROGRESS])) {
             throw new \RuntimeException('Work order must be Released or In Progress to issue materials.');
         }
 
         $wo->load('items');
+        $plannedQty  = (float) $wo->planned_qty;
+        $targetQty   = $targetQty ?? $plannedQty;
+        $scaleFactor = $plannedQty > 0 ? $targetQty / $plannedQty : 1.0;
 
-        // ── Step 1: gather pending lines + stock on hand ──────────────────────
-        $pending = [];
+        // ── Step 1: compute target per line and check stock ───────────────────
+        $toIssueLines  = [];   // need to consume more from stock
+        $toReverseLines = [];  // over-issued; need to return to stock
+        $shortages     = [];
+
         foreach ($wo->items as $line) {
-            $remaining = round($line->qty_required - $line->qty_issued, 6);
-            if ($remaining <= 0) continue;
+            $target  = round((float) $line->qty_required * $scaleFactor, 6);
+            $current = (float) $line->qty_issued;
+            $delta   = round($target - $current, 6);
 
-            $soh = (float) DB::table('stock_movements')
-                ->where('stock_id', $line->component_code)
-                ->sum('qty');                          // sum across all locations
-            $soh = max(0.0, $soh);                    // floor at zero — no phantom stock
+            if (abs($delta) < 0.000001) continue;  // effectively zero
 
-            $pending[] = [
-                'line'      => $line,
-                'remaining' => $remaining,
-                'soh'       => $soh,
-                'ratio'     => $remaining > 0 ? $soh / $remaining : 1.0,
-            ];
+            if ($delta > 0) {
+                $soh = max(0.0, (float) DB::table('stock_movements')
+                    ->where('stock_id', $line->component_code)->sum('qty'));
+
+                if ($soh < $delta) {
+                    $shortages[] = [
+                        'stock_id'  => $line->component_code,
+                        'required'  => $delta,
+                        'available' => $soh,
+                        'shortfall' => round($delta - $soh, 4),
+                    ];
+                }
+                $toIssueLines[] = ['line' => $line, 'delta' => $delta, 'target' => $target, 'soh' => $soh];
+            } else {
+                // Negative delta — return excess to stock
+                $toReverseLines[] = ['line' => $line, 'delta' => $delta, 'target' => $target];
+            }
         }
 
-        if (empty($pending)) {
-            throw new \RuntimeException('All material lines are already fully issued.');
+        if (empty($toIssueLines) && empty($toReverseLines)) {
+            throw new \RuntimeException('No material adjustments needed — quantities already match the target.');
         }
 
-        // ── Step 2: bottleneck ratio ──────────────────────────────────────────
-        $bottleneck = min(1.0, ...array_column($pending, 'ratio'));
-        $bottleneck = max(0.0, $bottleneck);
+        // ── Step 2: bottleneck ratio (for issue lines only) ───────────────────
+        $bottleneck = 1.0;
+        if (!empty($toIssueLines)) {
+            $bottleneck = min(1.0, ...array_map(
+                fn($p) => $p['delta'] > 0 ? min(1.0, $p['soh'] / $p['delta']) : 1.0,
+                $toIssueLines
+            ));
+            $bottleneck = max(0.0, $bottleneck);
+        }
 
-        // Build shortage report for response
-        $shortages = array_values(array_filter($pending, fn($p) => $p['soh'] < $p['remaining']));
-        $shortages = array_map(fn($p) => [
-            'stock_id'  => $p['line']->component_code,
-            'required'  => $p['remaining'],
-            'available' => $p['soh'],
-            'shortfall' => round($p['remaining'] - $p['soh'], 4),
-        ], $shortages);
-
-        if ($bottleneck <= 0) {
-            // At least one component is completely out — cannot produce anything
-            $zeroItem = collect($pending)->firstWhere('soh', 0);
+        if ($bottleneck <= 0 && !empty($toIssueLines)) {
+            $zeroItem = collect($toIssueLines)->firstWhere('soh', 0);
             throw new \RuntimeException(
-                "Cannot issue: '{$zeroItem['line']->component_code}' ({$zeroItem['line']->description}) "
-                . "has zero stock. Supply this component before proceeding."
+                "Cannot issue: '{$zeroItem['line']->component_code}' has zero stock. "
+                . 'Supply this component before proceeding.'
             );
         }
 
-        // ── Step 3: issue each line at bottleneck-scaled quantity ─────────────
-        $totalIssued = 0;
+        // ── Step 3: post movements ────────────────────────────────────────────
+        $netCostDelta = 0;
 
-        DB::transaction(function () use ($pending, $bottleneck, $wo, $user, &$totalIssued) {
-            foreach ($pending as $p) {
-                $line      = $p['line'];
-                $toIssue   = round($p['remaining'] * $bottleneck, 6);
-                $toIssue   = min($toIssue, $p['soh']);   // hard cap — never exceed available
+        DB::transaction(function () use ($toIssueLines, $toReverseLines, $bottleneck, $wo, $user, &$netCostDelta) {
+            $glBase = ['trans_no' => $wo->id, 'tran_date' => now()->toDateString(), 'reference' => $wo->wo_no, 'created_by' => $user];
 
-                if ($toIssue <= 0) continue;
+            // Issue lines
+            foreach ($toIssueLines as $p) {
+                $line    = $p['line'];
+                $qty     = round($p['delta'] * $bottleneck, 6);
+                $qty     = min($qty, $p['soh']);
+                if ($qty <= 0) continue;
 
                 $item     = DB::table('items')->where('stock_id', $line->component_code)->first();
                 $unitCost = $this->resolveUnitCost($line->component_code, (float) ($item?->purchase_cost ?? $line->unit_cost));
-                $lineTotal = round($toIssue * $unitCost, 4);
-                $totalIssued += $lineTotal;
+                $cost     = round($qty * $unitCost, 4);
+                $netCostDelta += $cost;
 
                 DB::table('stock_movements')->insert([
                     'trans_no'      => $wo->id,
@@ -171,7 +212,7 @@ class WorkOrderService
                     'type'          => self::TYPE_WO_ISSUE,
                     'loc_code'      => $wo->location_code,
                     'tran_date'     => now()->toDateString(),
-                    'qty'           => -$toIssue,
+                    'qty'           => -$qty,
                     'price'         => $unitCost,
                     'standard_cost' => $unitCost,
                     'reference'     => $wo->wo_no,
@@ -179,21 +220,50 @@ class WorkOrderService
                     'unique_key'    => \Illuminate\Support\Str::uuid()->toString(),
                 ]);
 
+                $newQtyIssued = round($line->qty_issued + $qty, 6);
                 $line->update([
-                    'qty_issued' => round($line->qty_issued + $toIssue, 6),
+                    'qty_issued' => $newQtyIssued,
                     'unit_cost'  => $unitCost,
-                    'line_total' => round(($line->qty_issued + $toIssue) * $unitCost, 4),
+                    'line_total' => round($newQtyIssued * $unitCost, 4),
                 ]);
             }
 
-            // GL: DR WIP / CR Inventory
-            if ($totalIssued > 0) {
+            // Reverse lines (return excess to stock)
+            foreach ($toReverseLines as $p) {
+                $line    = $p['line'];
+                $qty     = abs($p['delta']);   // positive qty for the stock return
+                $unitCost = (float) $line->unit_cost;
+                $cost     = round($qty * $unitCost, 4);
+                $netCostDelta -= $cost;
+
+                DB::table('stock_movements')->insert([
+                    'trans_no'      => $wo->id,
+                    'stock_id'      => $line->component_code,
+                    'type'          => self::TYPE_WO_ISSUE,
+                    'loc_code'      => $wo->location_code,
+                    'tran_date'     => now()->toDateString(),
+                    'qty'           => $qty,    // positive = returning to stock
+                    'price'         => $unitCost,
+                    'standard_cost' => $unitCost,
+                    'reference'     => $wo->wo_no,
+                    'comments'      => 'Material Return — ' . $wo->product_description,
+                    'unique_key'    => \Illuminate\Support\Str::uuid()->toString(),
+                ]);
+
+                $newQtyIssued = round($p['target'], 6);
+                $line->update([
+                    'qty_issued' => $newQtyIssued,
+                    'line_total' => round($newQtyIssued * $unitCost, 4),
+                ]);
+            }
+
+            // GL: DR WIP / CR Inventory (net of issues minus returns)
+            if (abs($netCostDelta) > 0.0001) {
                 $glSettings = DB::table('gl_settings')->first();
                 $wipAccount = $glSettings?->wip_account ?? '103000';
                 $invAccount = $glSettings?->items_inventory_account ?? '101010';
-                $glBase     = ['trans_no' => $wo->id, 'tran_date' => now()->toDateString(), 'reference' => $wo->wo_no, 'created_by' => $user];
-                DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $wipAccount, 'narration' => 'WIP — ' . $wo->wo_no,         'amount' =>  $totalIssued]));
-                DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $invAccount,  'narration' => 'Goods Issue — ' . $wo->wo_no, 'amount' => -$totalIssued]));
+                DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $wipAccount, 'narration' => 'WIP — ' . $wo->wo_no,         'amount' =>  $netCostDelta]));
+                DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $invAccount,  'narration' => 'Goods Issue — ' . $wo->wo_no, 'amount' => -$netCostDelta]));
             }
 
             $wo->update([
@@ -202,14 +272,15 @@ class WorkOrderService
             ]);
         });
 
-        $producibleQty = round($wo->planned_qty * $bottleneck, 4);
+        $partial = $bottleneck < 1.0 && !empty($toIssueLines);
 
         return [
             'issued'          => true,
             'bottleneck_ratio'=> round($bottleneck, 4),
-            'producible_qty'  => $producibleQty,
-            'planned_qty'     => $wo->planned_qty,
-            'partial'         => $bottleneck < 1.0,
+            'producible_qty'  => round($targetQty * $bottleneck, 4),
+            'planned_qty'     => $plannedQty,
+            'target_qty'      => $targetQty,
+            'partial'         => $partial,
             'shortages'       => $shortages,
         ];
     }

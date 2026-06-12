@@ -32,7 +32,7 @@ return new class extends Migration
             $table->string('created_by', 60)->nullable();
             $table->timestamps();
 
-            $table->foreign('farmer_id')->references('id')->on('farmers')->nullOnDelete();
+            $table->foreign('farmer_id')->references('id')->on('farmers')->noActionOnDelete();
         });
     }
 

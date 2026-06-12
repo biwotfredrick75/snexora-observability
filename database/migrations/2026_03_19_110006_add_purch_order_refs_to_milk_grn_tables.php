@@ -13,14 +13,14 @@ return new class extends Migration
             $table->unsignedBigInteger('purch_order_id')->nullable()->after('purchase_item_id');
             $table->string('tid', 50)->nullable()->after('loc_code');
 
-            $table->foreign('purch_order_id')->references('id')->on('milk_purch_orders')->nullOnDelete();
+            $table->foreign('purch_order_id')->references('id')->on('milk_purch_orders')->noActionOnDelete();
         });
 
         Schema::table('milk_grn_items', function (Blueprint $table) {
             $table->unsignedBigInteger('po_detail_item_id')->nullable()->after('grn_batch_id');
             $table->string('tid', 50)->nullable()->after('unit_price');
 
-            $table->foreign('po_detail_item_id')->references('id')->on('milk_purch_order_details')->nullOnDelete();
+            $table->foreign('po_detail_item_id')->references('id')->on('milk_purch_order_details')->noActionOnDelete();
         });
     }
 

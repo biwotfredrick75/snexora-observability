@@ -131,6 +131,42 @@ class SupplierCreditNoteController extends Controller
     }
 
     /**
+     * GET /purchases/supplier-credit-notes/{id}/gl
+     */
+    public function glEntries(int $id): JsonResponse
+    {
+        $scn = SupplierCreditNote::with('supplier:supplierId,supplierName')->findOrFail($id);
+
+        $glEntries = DB::table('gld_transactions as g')
+            ->leftJoin('0_chart_master as cm', 'cm.account_code', '=', 'g.account_code')
+            ->where('g.trans_no', $scn->id)
+            ->where('g.reference', $scn->scn_no)
+            ->select(
+                'g.account_code',
+                DB::raw('COALESCE(cm.account_name, g.account_code) AS account_name'),
+                'g.narration as memo',
+                'g.tran_date',
+                'g.reference',
+                DB::raw('CASE WHEN g.amount >= 0 THEN g.amount ELSE 0 END as debit'),
+                DB::raw('CASE WHEN g.amount < 0 THEN ABS(g.amount) ELSE 0 END as credit'),
+            )
+            ->orderBy('g.id')
+            ->get();
+
+        $company = DB::table('company_preferences')->first();
+
+        return ApiResponse::success([
+            'scn'        => $scn,
+            'gl_entries' => $glEntries,
+            'company'    => $company ? [
+                'name'    => $company->name,
+                'phone'   => $company->phone,
+                'address' => $company->address,
+            ] : [],
+        ], 'GL entries');
+    }
+
+    /**
      * GET /purchases/supplier-credit-notes/{id}
      */
     public function show(int $id): JsonResponse
@@ -176,22 +212,23 @@ class SupplierCreditNoteController extends Controller
 
             // Create header (temp SCN no)
             $scn = SupplierCreditNote::create([
-                'scn_no'       => 'TEMP-' . uniqid(),
-                'supplier_id'  => $request->supplier_id,
-                'date'         => $request->date,
-                'due_date'     => $request->due_date,
-                'reference'    => $request->reference ?? '',
-                'supplier_ref' => $request->supplier_ref ?? '',
-                'terms'        => $request->terms ?? '',
-                'tax_group'    => $request->tax_group ?? '',
-                'dimension_id' => $request->dimension_id,
-                'dimension2_id'=> $request->dimension2_id,
-                'items_total'  => $itemsTotal,
-                'gl_total'     => $glTotal,
-                'total'        => $total,
-                'memo'         => $request->memo ?? '',
-                'status'       => 'posted',
-                'raised_by'    => $user,
+                'scn_no'            => 'TEMP-' . uniqid(),
+                'supplier_id'       => $request->supplier_id,
+                'date'              => $request->date,
+                'due_date'          => $request->due_date,
+                'reference'         => $request->reference ?? '',
+                'source_invoice_no' => $request->source_invoice_no ?? '',
+                'supplier_ref'      => $request->supplier_ref ?? '',
+                'terms'             => $request->terms ?? '',
+                'tax_group'         => $request->tax_group ?? '',
+                'dimension_id'      => $request->dimension_id,
+                'dimension2_id'     => $request->dimension2_id,
+                'items_total'       => $itemsTotal,
+                'gl_total'          => $glTotal,
+                'total'             => $total,
+                'memo'              => $request->memo ?? '',
+                'status'            => 'posted',
+                'raised_by'         => $user,
             ]);
 
             $scn->update(['scn_no' => SupplierCreditNote::nextScnNo()]);
@@ -262,7 +299,7 @@ class SupplierCreditNoteController extends Controller
             // DR Accounts Payable (reduces what we owe)
             GldTransaction::create([
                 'trans_no'     => $scn->id,
-                'type'         => 'SCN',
+                'type'         => StockMovement::TYPE_CREDIT_NOTE,
                 'tran_date'    => $tranDate,
                 'account_code' => $payableAccount,
                 'reference'    => $ref,
@@ -276,7 +313,7 @@ class SupplierCreditNoteController extends Controller
             // CR Inventory account
             GldTransaction::create([
                 'trans_no'     => $scn->id,
-                'type'         => 'SCN',
+                'type'         => StockMovement::TYPE_CREDIT_NOTE,
                 'tran_date'    => $tranDate,
                 'account_code' => $inventoryAccount,
                 'reference'    => $ref,
@@ -291,7 +328,7 @@ class SupplierCreditNoteController extends Controller
             StockMovement::create([
                 'trans_no'      => $scn->id,
                 'stock_id'      => $item['stock_id'],
-                'type'          => 'SCN',
+                'type'          => StockMovement::TYPE_CREDIT_NOTE,
                 'loc_code'      => $item['location_id'] ?? '',
                 'tran_date'     => $tranDate,
                 'date_moved'    => $tranDate,
@@ -313,7 +350,7 @@ class SupplierCreditNoteController extends Controller
             // DR Accounts Payable
             GldTransaction::create([
                 'trans_no'     => $scn->id,
-                'type'         => 'SCN',
+                'type'         => StockMovement::TYPE_CREDIT_NOTE,
                 'tran_date'    => $tranDate,
                 'account_code' => $payableAccount,
                 'reference'    => $ref,
@@ -327,7 +364,7 @@ class SupplierCreditNoteController extends Controller
             // CR specified account
             GldTransaction::create([
                 'trans_no'     => $scn->id,
-                'type'         => 'SCN',
+                'type'         => StockMovement::TYPE_CREDIT_NOTE,
                 'tran_date'    => $tranDate,
                 'account_code' => $gl['account_code'],
                 'reference'    => $ref,

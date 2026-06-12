@@ -28,8 +28,8 @@ return new class extends Migration
             $table->string('tid', 50)->nullable();
             $table->timestamps();
 
-            $table->foreign('purch_order_id')->references('id')->on('milk_purch_orders')->cascadeOnDelete();
-            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->cascadeOnDelete();
+            $table->foreign('purch_order_id')->references('id')->on('milk_purch_orders')->noActionOnDelete();
+            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->noActionOnDelete();
         });
     }
 

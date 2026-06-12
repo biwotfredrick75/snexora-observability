@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Inventory;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\CompanyPreference;
 use App\Models\Item;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,7 +19,7 @@ class ItemController extends Controller
         $q        = trim($request->get('q', ''));
         $locId    = $request->get('location_id');
         $allItems = (bool) $request->get('all', false); // bypass no_sale / qty filters
-        $maxLimit = $allItems ? 200 : 100;
+        $maxLimit = $allItems ? 1000 : 500;
         $limit    = min((int) $request->get('limit', 30), $maxLimit);
 
         $query = DB::table('items')
@@ -52,13 +53,19 @@ class ItemController extends Controller
         // Attach stock quantity per location (or total if no location)
         $stockIds = $items->pluck('stock_id')->all();
 
+        // Accept either numeric location_id (DB id) or loc_code (string code)
+        $locCode = $request->get('loc_code');
+        if ($locId) {
+            $resolved = DB::table('inventory_locations')->where('id', $locId)->value('code');
+            if ($resolved) $locCode = $resolved;
+        }
+
         $stockQuery = DB::table('stock_movements')
             ->whereIn('stock_id', $stockIds)
             ->selectRaw('stock_id, SUM(qty) as qty_in_stock');
 
-        if ($locId) {
-            $locCode = DB::table('inventory_locations')->where('id', $locId)->value('code');
-            if ($locCode) $stockQuery->where('loc_code', $locCode);
+        if ($locCode) {
+            $stockQuery->where('loc_code', $locCode);
         }
 
         $stockQtys = $stockQuery->groupBy('stock_id')
@@ -76,11 +83,15 @@ class ItemController extends Controller
             ->groupBy('stock_id')
             ->map(fn ($g) => (float) $g->first()->price);
 
-        $result = $items->map(function ($item) use ($stockQtys, $salesPrices) {
-            $standardCost = (float) $item->purchase_cost
-                          + (float) $item->material_cost
-                          + (float) $item->labour_cost
-                          + (float) $item->overhead_cost;
+        $autoStdCost = (bool) optional(CompanyPreference::first())->auto_standard_cost ?? true;
+
+        $result = $items->map(function ($item) use ($stockQtys, $salesPrices, $autoStdCost) {
+            $standardCost = $autoStdCost
+                ? (float) $item->purchase_cost
+                + (float) $item->material_cost
+                + (float) $item->labour_cost
+                + (float) $item->overhead_cost
+                : (float) $item->standard_cost;
             $qtyInStock   = (float) ($stockQtys[$item->stock_id] ?? 0);
             $sellingPrice = $salesPrices[$item->stock_id] ?? 0.0;
             $priceLocked  = $sellingPrice > 0;
@@ -159,6 +170,7 @@ class ItemController extends Controller
             'material_cost'       => 'nullable|numeric|min:0',
             'labour_cost'         => 'nullable|numeric|min:0',
             'overhead_cost'       => 'nullable|numeric|min:0',
+            'standard_cost'       => 'nullable|numeric|min:0',
             'inactive'            => 'boolean',
             'no_sale'             => 'boolean',
             'no_purchase'         => 'boolean',
@@ -212,6 +224,7 @@ class ItemController extends Controller
             'material_cost'       => 'nullable|numeric|min:0',
             'labour_cost'         => 'nullable|numeric|min:0',
             'overhead_cost'       => 'nullable|numeric|min:0',
+            'standard_cost'       => 'nullable|numeric|min:0',
             'inactive'            => 'sometimes|boolean',
             'no_sale'             => 'sometimes|boolean',
             'no_purchase'         => 'sometimes|boolean',

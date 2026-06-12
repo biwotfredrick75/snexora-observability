@@ -38,8 +38,8 @@ return new class extends Migration
             $table->string('completed_by', 50)->nullable();
             $table->timestamps();
 
-            $table->foreign('bom_id')->references('id')->on('boms')->nullOnDelete();
-            $table->foreign('work_centre_id')->references('id')->on('work_centres')->nullOnDelete();
+            $table->foreign('bom_id')->references('id')->on('boms')->noActionOnDelete();
+            $table->foreign('work_centre_id')->references('id')->on('work_centres')->noActionOnDelete();
             $table->index(['status', 'due_date']);
             $table->index('product_code');
         });

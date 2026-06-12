@@ -72,6 +72,7 @@ class CustomerSeeder extends Seeder
 
             $customers[] = [
                 'debtor_no'                 => $debtorNo,
+                'farmer_no'                 => 'CST' . str_pad($i, 6, '0', STR_PAD_LEFT),
                 'customer_number'           => $i,
                 'name'                      => $name,
                 'short_name'                => $shortName,
@@ -83,7 +84,7 @@ class CustomerSeeder extends Seeder
                 'payment_terms'             => $paymentTermIds ? $paymentTermIds[array_rand($paymentTermIds)] : null,
                 'price_list_id'             => $salesTypeIds   ? $salesTypeIds[array_rand($salesTypeIds)]     : null,
                 'credit_status_id'          => $creditStatusIds? $creditStatusIds[array_rand($creditStatusIds)]: null,
-                'discount'                  => [0, 0, 0, 2.5, 5, 7.5, 10][rand(0, 6)],
+                'discount'                  => [0, 0, 0, 3, 5, 8, 10][rand(0, 6)],
                 'prompt_payment_discount'   => [0, 0, 1, 2][rand(0, 3)],
                 'credit_limit'              => $creditLimit,
                 'current_credit'            => round($creditLimit * (rand(0, 100) / 100), 2),

@@ -29,9 +29,9 @@ return new class extends Migration
             $table->string('tid', 50)->nullable();
             $table->timestamps();
 
-            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->cascadeOnDelete();
-            $table->foreign('supp_invoice_id')->references('id')->on('milk_supp_invoices')->cascadeOnDelete();
-            $table->foreign('grn_item_id')->references('id')->on('milk_grn_items')->cascadeOnDelete();
+            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->noActionOnDelete();
+            $table->foreign('supp_invoice_id')->references('id')->on('milk_supp_invoices')->noActionOnDelete();
+            $table->foreign('grn_item_id')->references('id')->on('milk_grn_items')->noActionOnDelete();
             $table->index('supp_trans_no');
         });
     }

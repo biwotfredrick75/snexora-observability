@@ -44,6 +44,28 @@ class FarmerSupplierPaymentController extends Controller
         );
     }
 
+    // ── GL account running balance ─────────────────────────────────────────────
+    //  GET /farmers/supplier-payments/account-balance?account_code=XXXX
+    public function accountBalance(Request $request): JsonResponse
+    {
+        $request->validate(['account_code' => 'required|string']);
+
+        $balance = (float) DB::table('gld_transactions')
+            ->where('account_code', $request->account_code)
+            ->sum('amount');
+
+        $account = DB::table('gl_accounts')
+            ->where('code', $request->account_code)
+            ->select('code', 'name')
+            ->first();
+
+        return ApiResponse::success([
+            'account_code' => $request->account_code,
+            'account_name' => $account?->name,
+            'balance'      => round($balance, 2),
+        ], 'Balance retrieved');
+    }
+
     // ── Available balance for advance validation ──────────────────────────────
     //  GET /farmers/supplier-payments/advance-limit?farmer_id=X&date=YYYY-MM-DD
     public function advanceLimit(Request $request): JsonResponse
@@ -121,11 +143,84 @@ class FarmerSupplierPaymentController extends Controller
 
         $data['created_by'] = $request->user()?->real_name ?? $request->user()?->user_id ?? 'system';
 
-        $payment = FarmerPayment::create($data);
+        $payment = DB::transaction(function () use ($data, $request) {
+            $payment = FarmerPayment::create($data);
+
+            // ── Post to GL ────────────────────────────────────────────────────
+            $glSettings  = DB::table('gl_settings')->first();
+            $transNo     = 'FP-' . $payment->id;
+            $createdBy   = $request->user()?->user_id ?? 'system';
+            $amount      = (float) $data['amount_payment'];
+            $bankCharge  = (float) ($data['bank_charge'] ?? 0);
+            $bankCode    = $data['from_account'] ?? ($glSettings->farmers_bank_account ?? '');
+            $payableCode = $glSettings->farmers_payable_account ?? '';
+            $chargeCode  = $glSettings->bank_charges_account    ?? '';
+            $narration   = trim(
+                ($data['type'] === 'advance' ? 'Farmer advance' : 'Farmer payment')
+                . ($data['reference'] ? ' — ' . $data['reference'] : '')
+                . ($data['memo'] ? ' | ' . $data['memo'] : '')
+            );
+
+            $glRows = [];
+
+            // DR Farmers Payable (reduces liability to farmer)
+            if ($payableCode) {
+                $glRows[] = [
+                    'trans_no'    => $transNo,
+                    'type'        => 'farmer_payment',
+                    'tran_date'   => $data['date_paid'],
+                    'account_code'=> $payableCode,
+                    'reference'   => $data['reference'] ?? $transNo,
+                    'narration'   => $narration,
+                    'amount'      => $amount,        // positive = debit
+                    'created_by'  => $createdBy,
+                    'created_at'  => now(),
+                    'updated_at'  => now(),
+                ];
+            }
+
+            // CR Bank Account (cash going out)
+            if ($bankCode) {
+                $glRows[] = [
+                    'trans_no'    => $transNo,
+                    'type'        => 'farmer_payment',
+                    'tran_date'   => $data['date_paid'],
+                    'account_code'=> $bankCode,
+                    'reference'   => $data['reference'] ?? $transNo,
+                    'narration'   => $narration,
+                    'amount'      => -($amount + $bankCharge), // negative = credit
+                    'created_by'  => $createdBy,
+                    'created_at'  => now(),
+                    'updated_at'  => now(),
+                ];
+            }
+
+            // DR Bank Charges (expense)
+            if ($bankCharge > 0 && $chargeCode) {
+                $glRows[] = [
+                    'trans_no'    => $transNo,
+                    'type'        => 'farmer_payment',
+                    'tran_date'   => $data['date_paid'],
+                    'account_code'=> $chargeCode,
+                    'reference'   => $data['reference'] ?? $transNo,
+                    'narration'   => 'Bank charge — ' . $narration,
+                    'amount'      => $bankCharge,    // positive = debit
+                    'created_by'  => $createdBy,
+                    'created_at'  => now(),
+                    'updated_at'  => now(),
+                ];
+            }
+
+            if (!empty($glRows)) {
+                DB::table('gld_transactions')->insert($glRows);
+            }
+
+            return $payment;
+        });
 
         return ApiResponse::created(
             $payment->load('farmer'),
-            'Payment recorded successfully'
+            'Payment recorded and GL entries posted'
         );
     }
 

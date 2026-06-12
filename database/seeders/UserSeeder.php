@@ -53,7 +53,7 @@ class UserSeeder extends Seeder
                 'inactive' => false,
             ]
         );
-        $admin->assignRole('admin');
+        $admin->syncRoles(['super_admin']);
 
         // Manager user
         $manager = User::firstOrCreate(

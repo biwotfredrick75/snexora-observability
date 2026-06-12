@@ -29,8 +29,8 @@ return new class extends Migration
             $table->string('tid', 50)->nullable();
             $table->timestamps();
 
-            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->cascadeOnDelete();
-            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->cascadeOnDelete();
+            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->noActionOnDelete();
+            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->noActionOnDelete();
             $table->index('unique_key');
             $table->index('random_identifier');
         });

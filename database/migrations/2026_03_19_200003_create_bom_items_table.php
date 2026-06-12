@@ -19,7 +19,7 @@ return new class extends Migration
             $table->integer('sort_order')->default(0);
             $table->timestamps();
 
-            $table->foreign('bom_id')->references('id')->on('boms')->cascadeOnDelete();
+            $table->foreign('bom_id')->references('id')->on('boms')->noActionOnDelete();
             $table->index(['bom_id', 'sort_order']);
         });
     }

@@ -4,6 +4,10 @@ namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use App\Models\User;
+use Spatie\Permission\Models\Role;
+use Spatie\Permission\Models\Permission;
 
 class InventoryLocationSeeder extends Seeder
 {
@@ -145,5 +149,108 @@ class InventoryLocationSeeder extends Seeder
                 ])
             );
         }
+
+        $this->seedGraderUsers();
+    }
+
+    private function seedGraderUsers(): void
+    {
+        app()['cache']->forget('spatie.permission.cache');
+
+        // Ensure grader role exists
+        $graderRole = Role::firstOrCreate(
+            ['name' => 'grader', 'guard_name' => 'api'],
+            ['display_name' => 'Grader']
+        );
+
+        // Ensure basic grader permissions exist and are assigned
+        $graderPermissions = ['view-dashboard', 'view-collection', 'create-collection'];
+        foreach ($graderPermissions as $perm) {
+            $permission = Permission::firstOrCreate(['name' => $perm, 'guard_name' => 'api']);
+            if (!$graderRole->hasPermissionTo($permission)) {
+                $graderRole->givePermissionTo($permission);
+            }
+        }
+
+        // Resolve route IDs for assignment (codes from MilkRouteSeeder)
+        $routeMap = DB::table('milk_routes')
+            ->whereIn('route_code', ['R001', 'R002', 'R003'])
+            ->pluck('id', 'route_code');
+
+        // Grader stations — user_id = loc_code, default_store = loc_code, route assigned
+        $graders = [
+            [
+                'loc_code'  => 'GRD001',
+                'real_name' => 'John Kamau',
+                'phone'     => '+254 700 200 001',
+                'password'  => 'Grader@001',
+                'route_id'  => $routeMap['R001'] ?? null,
+            ],
+            [
+                'loc_code'  => 'GRD002',
+                'real_name' => 'Mary Wanjiku',
+                'phone'     => '+254 700 200 002',
+                'password'  => 'Grader@002',
+                'route_id'  => $routeMap['R002'] ?? null,
+            ],
+            [
+                'loc_code'  => 'GRD003',
+                'real_name' => 'Peter Odhiambo',
+                'phone'     => '+254 700 200 003',
+                'password'  => 'Grader@003',
+                'route_id'  => $routeMap['R003'] ?? null,
+            ],
+        ];
+
+        foreach ($graders as $g) {
+            $user = User::firstOrCreate(
+                ['user_id' => $g['loc_code']],
+                [
+                    'email'         => strtolower($g['loc_code']) . '@nexora.local',
+                    'password'      => Hash::make($g['password']),
+                    'pin'           => Hash::make('1234'),
+                    'real_name'     => $g['real_name'],
+                    'phone'         => $g['phone'],
+                    'language'      => 'en',
+                    'theme'         => 'light',
+                    'page_size'     => 'A4',
+                    'prices_dec'    => 2,
+                    'qty_dec'       => 2,
+                    'rates_dec'     => 4,
+                    'percent_dec'   => 1,
+                    'show_gl'       => false,
+                    'show_codes'    => false,
+                    'show_hints'    => false,
+                    'graphic_links' => false,
+                    'rep_popup'     => false,
+                    'print_profile' => 'default',
+                    'def_print_destination' => 0,
+                    'def_print_orientation' => 0,
+                    'startup_tab'   => 'dashboard',
+                    'transaction_days' => 30,
+                    'use_date_picker'  => true,
+                    'default_store' => $g['loc_code'],
+                    'route_id'      => $g['route_id'],
+                    'query_size'    => 50,
+                    'inactive'      => false,
+                ]
+            );
+
+            DB::table('model_has_roles')
+                ->where('model_type', User::class)
+                ->where('model_id', $user->id)
+                ->delete();
+
+            DB::table('model_has_roles')->insert([
+                'role_id'    => $graderRole->id,
+                'model_type' => User::class,
+                'model_id'   => $user->id,
+            ]);
+        }
+
+        $this->command->info('✅ Grader users created:');
+        $this->command->line('  GRD001 / Grader@001  — John Kamau (Kikuyu)');
+        $this->command->line('  GRD002 / Grader@002  — Mary Wanjiku (Kiambu)');
+        $this->command->line('  GRD003 / Grader@003  — Peter Odhiambo (Thika)');
     }
 }

@@ -43,8 +43,11 @@ class WorkOrderController extends Controller
     // ── Show single WO with all details ──────────────────────────────────────
     public function show(int $id): JsonResponse
     {
-        $wo = WorkOrder::with(['bom', 'workCentre', 'items', 'labour', 'overhead'])->findOrFail($id);
-        return ApiResponse::success($wo, 'Work order retrieved');
+        $wo = WorkOrder::with(['bom', 'workCentre', 'mfgType', 'items', 'labour', 'overhead', 'byproducts'])->findOrFail($id);
+        $stages = DB::table('work_order_stages')->where('work_order_id', $id)->orderBy('stage_order')->get();
+        $data = $wo->toArray();
+        $data['stages'] = $stages;
+        return ApiResponse::success($data, 'Work order retrieved');
     }
 
     // ── Create (Draft) ────────────────────────────────────────────────────────
@@ -53,6 +56,7 @@ class WorkOrderController extends Controller
         $data = $request->validate([
             'product_code'        => 'required|string|max:20|exists:items,stock_id',
             'bom_id'              => 'required|integer|exists:boms,id',
+            'mfg_type_id'         => 'nullable|integer|exists:manufacturing_types,id',
             'work_centre_id'      => 'nullable|integer|exists:work_centres,id',
             'planned_qty'         => 'required|numeric|min:0.0001',
             'unit'                => 'nullable|string|max:20',
@@ -69,11 +73,16 @@ class WorkOrderController extends Controller
 
             $item = DB::table('items')->where('stock_id', $data['product_code'])->first();
 
+            // Auto-inherit mfg_type_id from BOM if not explicitly provided
+            $mfgTypeId = $data['mfg_type_id']
+                ?? DB::table('boms')->where('id', $data['bom_id'])->value('mfg_type_id');
+
             $wo = WorkOrder::create([
                 'wo_no'               => $woNo,
                 'product_code'        => $data['product_code'],
                 'product_description' => $item?->description ?? '',
                 'bom_id'              => $data['bom_id'],
+                'mfg_type_id'         => $mfgTypeId,
                 'work_centre_id'      => $data['work_centre_id'] ?? null,
                 'planned_qty'         => $data['planned_qty'],
                 'unit'                => $data['unit'] ?? ($item?->units ?? ''),
@@ -106,6 +115,7 @@ class WorkOrderController extends Controller
         $data = $request->validate([
             'product_code'        => 'required|string|max:20|exists:items,stock_id',
             'bom_id'              => 'required|integer|exists:boms,id',
+            'mfg_type_id'         => 'nullable|integer|exists:manufacturing_types,id',
             'work_centre_id'      => 'nullable|integer|exists:work_centres,id',
             'planned_qty'         => 'required|numeric|min:0.0001',
             'unit'                => 'nullable|string|max:20',
@@ -117,6 +127,12 @@ class WorkOrderController extends Controller
         ]);
 
         $item = DB::table('items')->where('stock_id', $data['product_code'])->first();
+
+        // Auto-inherit from BOM if not provided
+        if (empty($data['mfg_type_id'])) {
+            $data['mfg_type_id'] = DB::table('boms')->where('id', $data['bom_id'])->value('mfg_type_id');
+        }
+
         $wo->update(array_merge($data, ['product_description' => $item?->description ?? '']));
 
         return ApiResponse::updated($wo->fresh(), 'Work order updated');
@@ -139,25 +155,27 @@ class WorkOrderController extends Controller
         return ApiResponse::success($wo->fresh(['items', 'bom', 'workCentre']), 'Work order released — material requirements loaded');
     }
 
-    public function issueAll(int $id): JsonResponse
+    public function issueAll(Request $request, int $id): JsonResponse
     {
-        $wo   = WorkOrder::findOrFail($id);
-        $user = auth()->user()?->user_id ?? '';
+        $wo        = WorkOrder::findOrFail($id);
+        $user      = auth()->user()?->user_id ?? '';
+        $targetQty = $request->filled('actual_qty') ? (float) $request->actual_qty : null;
+
         try {
-            $result = $this->service->issueAll($wo, $user);
+            $result = $this->service->issueAll($wo, $user, $targetQty);
         } catch (\Throwable $e) {
             return ApiResponse::error($e->getMessage(), 422);
         }
 
         $message = $result['partial']
             ? sprintf(
-                'Partial issue: can produce %.4f of %.4f planned units (bottleneck %.0f%%). %d shortage(s) detected.',
+                'Partial issue: can produce %.4f of %.4f target units (bottleneck %.0f%%). %d shortage(s) detected.',
                 $result['producible_qty'],
-                $result['planned_qty'],
+                $result['target_qty'],
                 $result['bottleneck_ratio'] * 100,
                 count($result['shortages'])
             )
-            : 'Goods issue posted — all materials fully issued to production.';
+            : sprintf('Goods issue posted — materials adjusted for %.4f %s.', $result['target_qty'], $wo->unit);
 
         return ApiResponse::success([
             'work_order' => $wo->fresh(['items']),
@@ -168,11 +186,55 @@ class WorkOrderController extends Controller
     public function complete(Request $request, int $id): JsonResponse
     {
         $wo   = WorkOrder::findOrFail($id);
-        $data = $request->validate(['actual_qty' => 'required|numeric|min:0.0001']);
+        $data = $request->validate([
+            'actual_qty'              => 'required|numeric|min:0.0001',
+            'byproducts'              => 'nullable|array',
+            'byproducts.*.stock_id'   => 'required_with:byproducts|string|exists:items,stock_id',
+            'byproducts.*.qty'        => 'required_with:byproducts|numeric|min:0.0001',
+            'byproducts.*.unit'       => 'nullable|string|max:30',
+            'byproducts.*.loc_code'   => 'nullable|string|max:200',
+        ]);
         $user = auth()->user()?->user_id ?? '';
         DB::beginTransaction();
         try {
             $this->service->complete($wo, (float) $data['actual_qty'], $user);
+
+            // Register by-products
+            foreach ($data['byproducts'] ?? [] as $bp) {
+                $bpItem   = DB::table('items')->where('stock_id', $bp['stock_id'])->first();
+                $locCode  = $bp['loc_code'] ?? ($wo->output_location_code ?: $wo->location_code);
+                $unitCost = (float) ($bpItem?->purchase_cost ?? 0);
+
+                DB::table('stock_movements')->insert([
+                    'trans_no'      => $wo->id,
+                    'stock_id'      => $bp['stock_id'],
+                    'type'          => WorkOrderService::TYPE_WO_RECEIPT,
+                    'loc_code'      => $locCode,
+                    'tran_date'     => now()->toDateString(),
+                    'qty'           => (float) $bp['qty'],
+                    'price'         => $unitCost,
+                    'standard_cost' => $unitCost,
+                    'reference'     => $wo->wo_no,
+                    'comments'      => 'By-Product — ' . ($bpItem?->description ?? $bp['stock_id']),
+                    'unique_key'    => \Illuminate\Support\Str::uuid()->toString(),
+                ]);
+
+                DB::table('work_order_byproducts')->insert([
+                    'work_order_id'       => $wo->id,
+                    'work_order_stage_id' => null,
+                    'stage_code'          => 'completion',
+                    'stage_name'          => 'WO Completion',
+                    'stock_id'            => $bp['stock_id'],
+                    'description'         => $bpItem?->description ?? '',
+                    'qty'                 => (float) $bp['qty'],
+                    'unit'                => $bp['unit'] ?? ($bpItem?->units ?? ''),
+                    'location_code'       => $locCode,
+                    'registered_by'       => $user,
+                    'created_at'          => now(),
+                    'updated_at'          => now(),
+                ]);
+            }
+
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -243,30 +305,63 @@ class WorkOrderController extends Controller
         return ApiResponse::created($overhead, 'Overhead entry added');
     }
 
+    // ── Update a single BOM line's qty_issued ────────────────────────────────
+    public function updateItem(Request $request, int $id, int $itemId): JsonResponse
+    {
+        $wo = WorkOrder::findOrFail($id);
+
+        if (! in_array($wo->status, [WorkOrderService::STATUS_RELEASED, WorkOrderService::STATUS_IN_PROGRESS])) {
+            return ApiResponse::error('Material lines can only be edited on Released or In Progress work orders.', 422);
+        }
+
+        $data = $request->validate(['qty_issued' => 'required|numeric|min:0']);
+
+        $line = \App\Models\WorkOrderItem::where('id', $itemId)
+            ->where('work_order_id', $id)
+            ->firstOrFail();
+
+        $line->update([
+            'qty_issued' => round((float) $data['qty_issued'], 6),
+            'line_total' => round((float) $data['qty_issued'] * (float) $line->unit_cost, 4),
+        ]);
+
+        $wo->update([
+            'total_material_cost' => round(
+                $wo->items()->sum(DB::raw('qty_issued * unit_cost')),
+                4
+            ),
+        ]);
+
+        return ApiResponse::updated($wo->fresh(['items', 'bom', 'workCentre', 'labour', 'overhead']));
+    }
+
     // ── Cost sheet (for reporting) ─────────────────────────────────────────────
     public function costSheet(int $id): JsonResponse
     {
-        $wo = WorkOrder::with(['bom', 'workCentre', 'items', 'labour', 'overhead'])->findOrFail($id);
+        $wo = WorkOrder::with(['bom', 'workCentre', 'mfgType', 'items', 'labour', 'overhead', 'byproducts'])->findOrFail($id);
 
-        $grossMarginPct = 35; // default target margin
-        $unitCost       = $wo->unit_cost;
-        $sellingPrice   = $unitCost > 0 ? round($unitCost / (1 - $grossMarginPct / 100), 2) : 0;
+        $grossMarginPct  = 35;
+        $unitCost        = (float) $wo->unit_cost;
+        $actualQty       = (float) ($wo->actual_qty_produced ?: $wo->planned_qty);
+        $sellingPrice    = $unitCost > 0 ? round($unitCost / (1 - $grossMarginPct / 100), 2) : 0;
+
+        $perUnit = fn($batch) => $actualQty > 0 ? round((float) $batch / $actualQty, 4) : 0;
 
         $sheet = [
             'work_order'    => $wo,
             'cost_summary'  => [
-                ['label' => 'Direct Materials',    'batch_total' => $wo->total_material_cost,  'per_unit' => $wo->planned_qty > 0 ? round($wo->total_material_cost  / $wo->planned_qty, 4) : 0],
-                ['label' => 'Direct Labour',       'batch_total' => $wo->total_labour_cost,    'per_unit' => $wo->planned_qty > 0 ? round($wo->total_labour_cost    / $wo->planned_qty, 4) : 0],
-                ['label' => 'Variable Overhead',   'batch_total' => $wo->total_overhead_cost,  'per_unit' => $wo->planned_qty > 0 ? round($wo->total_overhead_cost  / $wo->planned_qty, 4) : 0],
-                ['label' => 'Scrap / Waste (3%)',  'batch_total' => $wo->total_scrap_cost,     'per_unit' => $wo->planned_qty > 0 ? round($wo->total_scrap_cost     / $wo->planned_qty, 4) : 0],
-                ['label' => 'TOTAL COST',          'batch_total' => $wo->total_cost,           'per_unit' => $unitCost],
+                ['label' => 'Direct Materials',    'batch_total' => (float) $wo->total_material_cost,  'per_unit' => $perUnit($wo->total_material_cost)],
+                ['label' => 'Direct Labour',       'batch_total' => (float) $wo->total_labour_cost,    'per_unit' => $perUnit($wo->total_labour_cost)],
+                ['label' => 'Variable Overhead',   'batch_total' => (float) $wo->total_overhead_cost,  'per_unit' => $perUnit($wo->total_overhead_cost)],
+                ['label' => 'Scrap / Waste (3%)',  'batch_total' => (float) $wo->total_scrap_cost,     'per_unit' => $perUnit($wo->total_scrap_cost)],
+                ['label' => 'TOTAL COST',          'batch_total' => (float) $wo->total_cost,           'per_unit' => $unitCost],
             ],
             'pricing'       => [
-                'unit_cost'       => $unitCost,
-                'target_margin'   => $grossMarginPct,
-                'selling_price'   => $sellingPrice,
-                'selling_incl_vat'=> round($sellingPrice * 1.16, 2),
-                'gross_profit'    => round($sellingPrice - $unitCost, 4),
+                'unit_cost'              => $unitCost,
+                'target_margin_pct'      => $grossMarginPct,
+                'suggested_price_ex_vat' => $sellingPrice,
+                'suggested_price_inc_vat'=> round($sellingPrice * 1.16, 2),
+                'gross_profit'           => round($sellingPrice - $unitCost, 4),
             ],
         ];
 

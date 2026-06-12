@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::table('sales_invoices', function (Blueprint $table) {
             $table->unsignedBigInteger('so_id')->nullable()->after('dn_id');
-            $table->foreign('so_id')->references('id')->on('sales_orders')->nullOnDelete();
+            $table->foreign('so_id')->references('id')->on('sales_orders')->noActionOnDelete();
         });
     }
 

@@ -34,7 +34,7 @@ return new class extends Migration
         Schema::create('supplier_credit_note_items', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('scn_id');
-            $table->foreign('scn_id')->references('id')->on('supplier_credit_notes')->onDelete('cascade');
+            $table->foreign('scn_id')->references('id')->on('supplier_credit_notes')->noActionOnDelete();
             $table->unsignedBigInteger('po_id')->nullable();    // source GRN purchase order
             $table->string('grn_no', 25)->nullable();
             $table->string('stock_id', 20);
@@ -51,7 +51,7 @@ return new class extends Migration
         Schema::create('supplier_credit_note_gl_items', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('scn_id');
-            $table->foreign('scn_id')->references('id')->on('supplier_credit_notes')->onDelete('cascade');
+            $table->foreign('scn_id')->references('id')->on('supplier_credit_notes')->noActionOnDelete();
             $table->string('account_code', 20);
             $table->string('account_name', 100)->nullable();
             $table->unsignedBigInteger('dimension_id')->nullable();

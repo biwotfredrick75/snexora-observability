@@ -30,7 +30,7 @@ return new class extends Migration
         // Journal Entry lines
         Schema::create('journal_entry_lines', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('journal_id')->constrained('journal_entries')->cascadeOnDelete();
+            $table->foreignId('journal_id')->constrained('journal_entries')->noActionOnDelete();
             $table->string('account_code', 20);
             $table->string('counterparty', 100)->nullable();
             $table->unsignedBigInteger('dimension_id')->nullable();
@@ -58,7 +58,7 @@ return new class extends Migration
         // Which GL lines have been ticked in a reconciliation
         Schema::create('bank_reconciliation_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('reconciliation_id')->constrained('bank_reconciliations')->cascadeOnDelete();
+            $table->foreignId('reconciliation_id')->constrained('bank_reconciliations')->noActionOnDelete();
             $table->unsignedBigInteger('gld_transaction_id');
             $table->index('gld_transaction_id');
         });

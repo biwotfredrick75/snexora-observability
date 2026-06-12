@@ -19,7 +19,7 @@ return new class extends Migration {
             $table->timestamps();
 
             $table->foreign('farmer_id')->references('id')->on('farmers');
-            $table->foreign('service_id')->references('id')->on('checkoff_services')->nullOnDelete();
+            $table->foreign('service_id')->references('id')->on('checkoff_services')->noActionOnDelete();
             $table->index(['farmer_id', 'month', 'year']);
             $table->index(['month', 'year']);
         });

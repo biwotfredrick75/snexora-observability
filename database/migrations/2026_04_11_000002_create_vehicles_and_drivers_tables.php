@@ -28,7 +28,7 @@ return new class extends Migration
             $table->string('license_class', 10)->nullable()->comment('A, B, C, BCE, etc.');
             $table->string('phone', 20)->nullable();
             $table->unsignedBigInteger('vehicle_id')->nullable();
-            $table->foreign('vehicle_id')->references('id')->on('vehicles')->nullOnDelete();
+            $table->foreign('vehicle_id')->references('id')->on('vehicles')->noActionOnDelete();
             $table->boolean('inactive')->default(false);
             $table->timestamps();
         });

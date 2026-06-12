@@ -50,7 +50,7 @@ class FarmerSeeder extends Seeder
     public function run(): void
     {
         $total    = 20_000;
-        $chunk    = 1_000;
+        $chunk    = 100; // SQL Server max 2100 params; 19 cols × 100 rows = 1900
         $now      = now()->toDateTimeString();
 
         // Pre-load reference IDs

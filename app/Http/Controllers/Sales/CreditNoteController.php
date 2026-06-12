@@ -10,19 +10,20 @@ use App\Models\DebtorAllocation;
 use App\Models\GldTransaction;
 use App\Models\SalesInvoiceItem;
 use App\Models\StockMovement;
+use App\Events\DashboardEvent;
+use App\Services\Etims\EtimsService;
 use App\Services\Sales\AllocationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class CreditNoteController extends Controller
 {
     private function calcLineTotal(array $item): float
     {
-        return round(
-            floatval($item['qty']) * floatval($item['price']) * (1 - floatval($item['discount_pct'] ?? 0) / 100),
-            2
-        );
+        // Return value = qty × unit price (no discount) per business requirement
+        return round(floatval($item['qty']) * floatval($item['price']), 2);
     }
 
     public function index(Request $request): JsonResponse
@@ -44,7 +45,7 @@ class CreditNoteController extends Controller
     {
         $validated = $request->validate([
             'inv_id'               => 'nullable|integer|exists:sales_invoices,id',
-            'cn_type'              => 'required|in:return,discount,write_off',
+            'cn_type'              => 'required|in:return,return_to_store,damage,discount,write_off',
             'debtor_no'            => 'required|string|max:10|exists:customers,debtor_no',
             'branch_id'            => 'nullable|string|max:10',
             'customer_credit_ref'  => 'nullable|string|max:60',
@@ -156,7 +157,7 @@ class CreditNoteController extends Controller
         $company   = DB::table('company_preferences')->first();
         $glSetting = DB::table('gl_settings')->first();
 
-        return DB::transaction(function () use ($cn, $company, $glSetting) {
+        $placed = DB::transaction(function () use ($cn, $company, $glSetting) {
             $cn->update(['status' => 'placed']);
 
             $createdBy = auth()->user()?->user_id ?? 'system';
@@ -168,7 +169,8 @@ class CreditNoteController extends Controller
             $debtorsGlCode = ($company->debtors_gl_code ?? null) ?: 'DEBTORS';
 
             match ($cn->cn_type) {
-                'return'    => $this->placeReturn($cn, $company, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
+                'return', 'return_to_store' => $this->placeReturn($cn, $company, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
+                'damage'    => $this->placeReturnDamage($cn, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
                 'discount'  => $this->placeDiscount($cn, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
                 'write_off' => $this->placeWriteOff($cn, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
             };
@@ -186,8 +188,19 @@ class CreditNoteController extends Controller
             // Auto-allocate against the linked invoice (inside this transaction)
             app(AllocationService::class)->allocateCreditNote($cn->fresh());
 
-            return ApiResponse::success($cn->fresh(), 'Credit note placed');
+            broadcast(new DashboardEvent('return_items', 'placed', ['cn_no' => $cn->cn_no, 'amount' => $cn->amount_total, 'cn_type' => $cn->cn_type]));
+            return $cn->fresh();
         });
+
+        if (! in_array($placed->etims_status, ['signed', 'stamped'])) {
+            try {
+                app(EtimsService::class)->stampCreditNote($placed);
+            } catch (\Throwable $e) {
+                Log::error('eTIMS stampCreditNote failed: ' . $e->getMessage());
+            }
+        }
+
+        return ApiResponse::success($placed->fresh(), 'Credit note placed');
     }
 
     // ── Return: goods back to inventory + COGS reversal + sales reversal ──────
@@ -254,6 +267,69 @@ class CreditNoteController extends Controller
         // CR Debtors
         if ($totalGrossReturns != 0) {
             $this->glEntry($cn->id, $tranDate, $debtorsGlCode, -round($totalGrossReturns, 2), "CN Return Debtors — {$cnNo}", $cnNo, $createdBy);
+        }
+    }
+
+    // ── Damage: goods moved to damage location, revenue reversed, no COGS reversal ──
+
+    private function placeReturnDamage(CreditNote $cn, object $glSetting, string $createdBy, string $cnNo, string $tranDate, string $debtorsGlCode): void
+    {
+        // Find the damage/quarantine location (first location flagged as damage, else first with 'damage' in code)
+        $damageLocCode = DB::table('inventory_locations')
+            ->where(function ($q) {
+                $q->where('is_damage', 1)->orWhereRaw("LOWER(code) LIKE '%damage%'")->orWhereRaw("LOWER(description) LIKE '%damage%'");
+            })
+            ->where('inactive', 0)
+            ->value('code');
+
+        // Fall back to first active location if no dedicated damage location
+        if (! $damageLocCode) {
+            $damageLocCode = DB::table('inventory_locations')->where('inactive', 0)->value('code');
+        }
+
+        $totalGrossReturns = 0.0;
+
+        foreach ($cn->items as $cnItem) {
+            $qty          = (float) $cnItem->qty;
+            $standardCost = $this->resolveStandardCost($cnItem);
+
+            // Stock movement: goods into damage location (positive qty, damage location)
+            StockMovement::create([
+                'trans_no'      => $cn->id,
+                'stock_id'      => $cnItem->stock_id,
+                'type'          => StockMovement::TYPE_CREDIT_NOTE,
+                'loc_code'      => $damageLocCode,
+                'tran_date'     => $tranDate,
+                'date_moved'    => $tranDate,
+                'qty'           => $qty,
+                'price'         => $cnItem->price,
+                'standard_cost' => $standardCost,
+                'reference'     => $cnNo,
+                'comments'      => $cn->comments,
+                'user_name'     => $createdBy,
+                'approved'      => 1,
+            ]);
+
+            $item = $this->itemGlAccounts($cnItem->stock_id);
+
+            // Reverse Revenue only — no COGS reversal (damaged goods carry no book value recovery)
+            if ($item && $item->sales_account) {
+                [$grossAmount, $discountAmount, $netAfterDisc, $taxAmount, $taxAccount] = $this->calcRevenueBreakdown($cnItem, $item);
+
+                $netRevenue = $netAfterDisc - $taxAmount;
+                $totalGrossReturns += $grossAmount;
+
+                $this->glEntry($cn->id, $tranDate, $item->sales_account, $netRevenue, "CN Damage Return Sales — {$cnItem->description} ({$cnNo})", $cnNo, $createdBy);
+
+                if ($taxAccount && $taxAmount != 0) {
+                    $this->glEntry($cn->id, $tranDate, $taxAccount, $taxAmount, "CN Damage Return Tax — {$cnItem->description} ({$cnNo})", $cnNo, $createdBy);
+                }
+            }
+        }
+
+        // CR Debtors (reduce customer balance)
+        if ($totalGrossReturns != 0) {
+            $this->glEntry($cn->id, $tranDate, $debtorsGlCode, -round($totalGrossReturns, 2), "CN Damage Return Debtors — {$cnNo}", $cnNo, $createdBy);
         }
     }
 
@@ -446,6 +522,25 @@ class CreditNoteController extends Controller
 
             return ApiResponse::success($cn->fresh(), 'Credit note allocated');
         });
+    }
+
+    public function stamp(int $id): JsonResponse
+    {
+        $cn = CreditNote::with('items')->find($id);
+        if (! $cn) return ApiResponse::notFound('Credit note not found');
+        if ($cn->status !== 'placed') return ApiResponse::error('Only placed credit notes can be stamped', 422);
+        if (in_array($cn->etims_status, ['signed', 'stamped'])) {
+            return ApiResponse::error('Credit note has already been submitted to KRA eTIMS', 422);
+        }
+
+        try {
+            app(EtimsService::class)->stampCreditNote($cn);
+        } catch (\Throwable $e) {
+            Log::error('Manual eTIMS CN stamp failed: ' . $e->getMessage());
+            return ApiResponse::error('eTIMS stamping failed: ' . $e->getMessage(), 502);
+        }
+
+        return ApiResponse::success($cn->fresh(), 'Credit note submitted to KRA eTIMS');
     }
 
     public function cancel(int $id): JsonResponse

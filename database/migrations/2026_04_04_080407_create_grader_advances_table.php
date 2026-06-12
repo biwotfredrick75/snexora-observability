@@ -20,7 +20,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['grader_id', 'advance_date']);
-            $table->foreign('grader_id')->references('id')->on('inventory_locations')->onDelete('cascade');
+            $table->foreign('grader_id')->references('id')->on('inventory_locations')->noActionOnDelete();
         });
     }
 

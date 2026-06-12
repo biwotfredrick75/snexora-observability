@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Banking;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Services\GlPostingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -121,7 +122,7 @@ class JournalEntryController extends Controller
             }
 
             DB::table('journal_entry_lines')->insert($lineInserts);
-            DB::table('gld_transactions')->insert($glInserts);
+            GlPostingService::post($glInserts);
 
             return ApiResponse::created(['id' => $journalId, 'journal_no' => $jno], 'Journal posted');
         });
@@ -140,7 +141,7 @@ class JournalEntryController extends Controller
             $orig    = DB::table('gld_transactions')->where('type', self::GL_TYPE)->where('reference', $journal->journal_no)->get();
             $transNo = $this->nextGlTransNo();
             if ($orig->isNotEmpty()) {
-                DB::table('gld_transactions')->insert($orig->map(fn ($l) => [
+                GlPostingService::post($orig->map(fn ($l) => [
                     'type'          => self::GL_TYPE,
                     'trans_no'      => $transNo,
                     'tran_date'     => now()->toDateString(),

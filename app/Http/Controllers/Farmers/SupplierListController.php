@@ -43,7 +43,7 @@ class SupplierListController extends Controller
             $suppliers = DB::table('suppliers')
                 ->when($status === 'active', fn ($q) => $q->where('inactive', false))
                 ->get(['id', 'supp_no', 'supp_name', 'phone', 'email',
-                       DB::raw("IF(inactive,0,1) as status"), DB::raw("'supplier' as source")]);
+                       DB::raw("IIF(inactive,0,1) as status"), DB::raw("'supplier' as source")]);
 
             $all = $farmers->merge($suppliers)->sortBy('supp_name')->values();
 

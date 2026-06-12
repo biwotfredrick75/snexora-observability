@@ -13,10 +13,12 @@ return new class extends Migration
     {
         Schema::table('gl_account_groups', function (Blueprint $table) {
             if (!Schema::hasColumn('gl_account_groups', 'class_id')) {
-                $table->foreignId('class_id')->nullable()->constrained('gl_account_classes')->nullOnDelete();
+                $table->unsignedInteger('class_id')->nullable();
+                $table->foreign('class_id')->references('id')->on('gl_account_classes')->noActionOnDelete();
             }
             if (!Schema::hasColumn('gl_account_groups', 'parent_id')) {
-                $table->foreignId('parent_id')->nullable()->constrained('gl_account_groups')->nullOnDelete();
+                $table->foreignId('parent_id')->nullable();
+                $table->foreign('parent_id')->references('id')->on('gl_account_groups')->noActionOnDelete();
             }
         });
     }

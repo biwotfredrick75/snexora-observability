@@ -15,7 +15,7 @@ return new class extends Migration
             $table->decimal('quantity_produced', 18, 8)->default(1);
             $table->timestamps();
 
-            $table->foreign('item_id')->references('id')->on('items')->cascadeOnDelete();
+            $table->foreign('item_id')->references('id')->on('items')->noActionOnDelete();
             $table->foreign('component_id')->references('id')->on('items');
         });
     }

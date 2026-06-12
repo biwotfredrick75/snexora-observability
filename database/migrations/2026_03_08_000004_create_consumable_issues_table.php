@@ -27,7 +27,7 @@ return new class extends Migration
 
         Schema::create('consumable_issue_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('issue_id')->constrained('consumable_issues')->cascadeOnDelete();
+            $table->foreignId('issue_id')->constrained('consumable_issues')->noActionOnDelete();
             $table->string('stock_id', 20);
             $table->decimal('quantity', 15, 4)->default(0);
             $table->string('unit', 20)->nullable();

@@ -22,7 +22,7 @@ return new class extends Migration
             $table->integer('sort_order')->default(0);
             $table->timestamps();
 
-            $table->foreign('work_order_id')->references('id')->on('work_orders')->cascadeOnDelete();
+            $table->foreign('work_order_id')->references('id')->on('work_orders')->noActionOnDelete();
             $table->index(['work_order_id', 'sort_order']);
         });
     }

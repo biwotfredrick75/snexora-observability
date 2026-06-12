@@ -25,7 +25,7 @@ return new class extends Migration
 
         Schema::create('stock_take_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('stock_take_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('stock_take_id')->constrained()->noActionOnDelete();
             $table->string('stock_id');
             $table->decimal('system_qty', 14, 6)->default(0);
             $table->decimal('counted_qty', 14, 6)->nullable();

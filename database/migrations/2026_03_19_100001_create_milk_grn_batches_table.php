@@ -19,8 +19,8 @@ return new class extends Migration
             $table->string('loc_code', 20)->default('');
             $table->timestamps();
 
-            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->cascadeOnDelete();
-            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->cascadeOnDelete();
+            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->noActionOnDelete();
+            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->noActionOnDelete();
             $table->index('unique_key');
         });
     }

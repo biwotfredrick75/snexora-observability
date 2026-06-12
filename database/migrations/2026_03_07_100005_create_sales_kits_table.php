@@ -18,7 +18,7 @@ return new class extends Migration
 
         Schema::create('sales_kit_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('kit_id')->constrained('sales_kits')->cascadeOnDelete();
+            $table->foreignId('kit_id')->constrained('sales_kits')->noActionOnDelete();
             $table->string('alias_code', 50)->nullable();
             $table->unsignedBigInteger('component_id');
             $table->decimal('quantity', 18, 6)->default(1);

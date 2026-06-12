@@ -11,7 +11,7 @@ return new class extends Migration
         Schema::create('customer_contacts', function (Blueprint $table) {
             $table->id();
             $table->string('debtor_no', 10);
-            $table->foreign('debtor_no')->references('debtor_no')->on('customers')->onDelete('cascade');
+            $table->foreign('debtor_no')->references('debtor_no')->on('customers')->noActionOnDelete();
             $table->string('assignment', 100)->nullable();
             $table->string('reference', 200)->nullable();
             $table->string('full_name', 100);

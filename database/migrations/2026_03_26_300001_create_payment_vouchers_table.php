@@ -30,7 +30,7 @@ return new class extends Migration {
 
         Schema::create('payment_voucher_allocations', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('payment_voucher_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('payment_voucher_id')->constrained()->noActionOnDelete();
             $table->string('transaction_type', 30); // Supplier Invoice, GRN Receipt, Credit Note
             $table->unsignedBigInteger('transaction_id');
             $table->decimal('this_allocation', 15, 2)->default(0);

@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('item_sales_prices', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('item_id')->constrained('items')->cascadeOnDelete();
+            $table->foreignId('item_id')->constrained('items')->noActionOnDelete();
             $table->string('currency', 50)->default('Kenya Shillings');
             $table->string('sales_type', 100);
             $table->decimal('price', 15, 4)->default(0);

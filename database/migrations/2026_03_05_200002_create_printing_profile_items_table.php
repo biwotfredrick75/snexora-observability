@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('printing_profile_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('profile_id')->constrained('printing_profiles')->cascadeOnDelete();
+            $table->foreignId('profile_id')->constrained('printing_profiles')->noActionOnDelete();
             $table->string('report_id', 20);
             $table->string('printer', 50)->default('Default');
             $table->timestamps();

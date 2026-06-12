@@ -13,7 +13,7 @@ return new class extends Migration
             $table->string('item_code', 50)->unique();
             $table->string('name', 150);
             $table->text('description')->nullable();
-            $table->foreignId('category_id')->nullable()->constrained('item_categories')->nullOnDelete();
+            $table->foreignId('category_id')->nullable()->constrained('item_categories')->noActionOnDelete();
             $table->string('item_tax_type', 50)->nullable();
             $table->enum('item_type', ['Purchased', 'Manufactured', 'Service'])->default('Purchased');
             $table->string('units_of_measure', 50)->nullable();

@@ -12,11 +12,11 @@ return new class extends Migration
             // Drop the existing FK so we can make the column nullable
             $table->dropForeign(['debtor_no']);
             $table->string('debtor_no', 10)->nullable()->change();
-            $table->foreign('debtor_no')->references('debtor_no')->on('customers')->nullOnDelete();
+            $table->foreign('debtor_no')->references('debtor_no')->on('customers')->noActionOnDelete();
 
             $table->string('customer_name', 120)->nullable()->after('debtor_no');
             $table->unsignedBigInteger('pos_trans_id')->nullable()->after('customer_name');
-            $table->foreign('pos_trans_id')->references('id')->on('pos_transactions')->nullOnDelete();
+            $table->foreign('pos_trans_id')->references('id')->on('pos_transactions')->noActionOnDelete();
         });
     }
 

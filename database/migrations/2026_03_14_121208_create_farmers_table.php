@@ -32,8 +32,8 @@ return new class extends Migration
             $table->string('village')->nullable();
             $table->timestamps();
 
-            $table->foreign('bank_id')->references('id')->on('farmer_banks')->nullOnDelete();
-            $table->foreign('route_id')->references('id')->on('milk_routes')->nullOnDelete();
+            $table->foreign('bank_id')->references('id')->on('farmer_banks')->noActionOnDelete();
+            $table->foreign('route_id')->references('id')->on('milk_routes')->noActionOnDelete();
         });
     }
 

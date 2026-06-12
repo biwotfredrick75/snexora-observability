@@ -37,12 +37,12 @@ return new class extends Migration
             $table->foreign('permission_id')
                 ->references('id')
                 ->on('permissions')
-                ->onDelete('cascade');
+                ->noActionOnDelete();
 
             $table->foreign('role_id')
                 ->references('id')
                 ->on('roles')
-                ->onDelete('cascade');
+                ->noActionOnDelete();
         });
 
         Schema::create('model_has_permissions', function (Blueprint $table) {
@@ -57,7 +57,7 @@ return new class extends Migration
             $table->foreign('permission_id')
                 ->references('id')
                 ->on('permissions')
-                ->onDelete('cascade');
+                ->noActionOnDelete();
         });
 
         Schema::create('model_has_roles', function (Blueprint $table) {
@@ -72,7 +72,7 @@ return new class extends Migration
             $table->foreign('role_id')
                 ->references('id')
                 ->on('roles')
-                ->onDelete('cascade');
+                ->noActionOnDelete();
         });
     }
 

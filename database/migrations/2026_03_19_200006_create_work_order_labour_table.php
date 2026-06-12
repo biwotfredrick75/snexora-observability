@@ -20,7 +20,7 @@ return new class extends Migration
             $table->string('created_by', 50)->default('');
             $table->timestamps();
 
-            $table->foreign('work_order_id')->references('id')->on('work_orders')->cascadeOnDelete();
+            $table->foreign('work_order_id')->references('id')->on('work_orders')->noActionOnDelete();
         });
     }
 

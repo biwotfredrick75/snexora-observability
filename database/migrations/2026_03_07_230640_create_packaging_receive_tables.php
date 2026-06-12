@@ -24,7 +24,7 @@ return new class extends Migration
 
         Schema::create('packaging_receive_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('packaging_receive_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('packaging_receive_id')->constrained()->noActionOnDelete();
             $table->foreignId('packaging_type_id')->constrained();
             $table->decimal('quantity', 14, 2)->default(0);
             $table->string('condition')->default('good');

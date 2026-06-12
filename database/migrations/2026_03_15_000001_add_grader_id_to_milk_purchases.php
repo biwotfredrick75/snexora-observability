@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::table('milk_purchases', function (Blueprint $table) {
             $table->unsignedBigInteger('grader_id')->nullable()->after('route_id');
-            $table->foreign('grader_id')->references('id')->on('inventory_locations')->nullOnDelete();
+            $table->foreign('grader_id')->references('id')->on('inventory_locations')->noActionOnDelete();
         });
     }
 

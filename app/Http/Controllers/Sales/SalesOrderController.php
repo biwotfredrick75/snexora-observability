@@ -699,6 +699,7 @@ class SalesOrderController extends Controller
                 'amount_total' => round($subTotal + $shippingCharge, 2),
             ]);
 
+            broadcast(new DashboardEvent('dispatch', 'created', ['dn_no' => $delivery->dn_no, 'so_no' => $order->so_no, 'amount' => $delivery->amount_total]));
             return ApiResponse::created($delivery->fresh()->load('items'), 'Dispatch created');
         });
     }

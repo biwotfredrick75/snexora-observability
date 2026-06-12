@@ -21,9 +21,9 @@ return new class extends Migration
             $table->string('price_list_id', 20)->default('');
             $table->timestamps();
 
-            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->cascadeOnDelete();
-            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->cascadeOnDelete();
-            $table->foreign('grn_batch_id')->references('id')->on('milk_grn_batches')->cascadeOnDelete();
+            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->noActionOnDelete();
+            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->noActionOnDelete();
+            $table->foreign('grn_batch_id')->references('id')->on('milk_grn_batches')->noActionOnDelete();
         });
     }
 

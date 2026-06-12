@@ -1,4 +1,5 @@
 <?php
+use App\Http\Controllers\Internal\BulkApprovalCallbackController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Analytics\MilkForecastController;
 use App\Http\Controllers\Analytics\SalesAnalyticsController;
@@ -6,6 +7,10 @@ use App\Http\Controllers\Analytics\InventoryAnalyticsController;
 use App\Http\Controllers\Analytics\ManufacturingAnalyticsController;
 use App\Http\Controllers\Analytics\PurchasesAnalyticsController;
 use App\Http\Controllers\Analytics\AiChatController;
+use App\Http\Controllers\Audit\AuditController;
+use App\Http\Controllers\Setup\EtimsSetupController;
+use App\Http\Controllers\Etims\EtimsController;
+use App\Http\Controllers\Etims\EtimsSettingsController;
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\Auth\GraderAuthController;
 use App\Http\Controllers\Auth\RolePermissionController;
@@ -77,6 +82,7 @@ use App\Http\Controllers\Inventory\PackagingTransferController;
 use App\Http\Controllers\Inventory\PackagingReceiveController;
 use App\Http\Controllers\Inventory\InventoryKpiController;
 use App\Http\Controllers\Inventory\StockMovementInquiryController;
+use App\Http\Controllers\Inventory\InventoryReportController;
 use App\Http\Controllers\Purchases\SupplierController;
 use App\Http\Controllers\Purchases\PurchaseRequisitionController;
 use App\Http\Controllers\Purchases\PurchaseOrderController;
@@ -359,6 +365,7 @@ Route::middleware('auth:api')->group(function () {
         // Journal Inquiry
         Route::get('journals',                          [JournalInquiryController::class, 'index']);
         Route::get('journals/types',                    [JournalInquiryController::class, 'types']);
+        Route::get('journals/batch-lines',              [JournalInquiryController::class, 'batchLines']);
         Route::get('journals/{type}/{transNo}/lines',   [JournalInquiryController::class, 'lines']);
 
         // GL Classes
@@ -417,6 +424,21 @@ Route::middleware('auth:api')->group(function () {
         Route::post('transfers',                       [\App\Http\Controllers\Banking\BankTransactionController::class, 'storeTransfer']);
         Route::post('transfers/{id}/void',             [\App\Http\Controllers\Banking\BankTransactionController::class, 'voidTransfer']);
 
+        // ── GL Integrity ──────────────────────────────────────────────────────
+        Route::get('gl-integrity', [\App\Http\Controllers\Banking\GlIntegrityController::class, 'check']);
+
+        // ── Bank Transaction Inquiry ──────────────────────────────────────────
+        Route::get('bank-inquiry/form-data', [\App\Http\Controllers\Banking\BankTransactionInquiryController::class, 'formData']);
+        Route::get('bank-inquiry',           [\App\Http\Controllers\Banking\BankTransactionInquiryController::class, 'index']);
+
+        // ── Petty Cash ────────────────────────────────────────────────────────
+        Route::get('petty-cash/form-data',       [\App\Http\Controllers\Banking\PettyCashController::class, 'formData']);
+        Route::get('petty-cash',                 [\App\Http\Controllers\Banking\PettyCashController::class, 'index']);
+        Route::post('petty-cash',                [\App\Http\Controllers\Banking\PettyCashController::class, 'store']);
+        Route::post('petty-cash/{id}/approve',   [\App\Http\Controllers\Banking\PettyCashController::class, 'approve']);
+        Route::post('petty-cash/{id}/disburse',  [\App\Http\Controllers\Banking\PettyCashController::class, 'disburse']);
+        Route::post('petty-cash/{id}/retire',    [\App\Http\Controllers\Banking\PettyCashController::class, 'retire']);
+
         // ── Banking & GL Reports ───────────────────────────────────────────────
         Route::prefix('reports')->group(function () {
             Route::get('form-data',       [\App\Http\Controllers\Banking\BankingReportsController::class, 'formData']);
@@ -433,6 +455,13 @@ Route::middleware('auth:api')->group(function () {
         Route::get('kpis',                  [InventoryKpiController::class,         'index']);
         Route::post('check-availability',   [InventoryKpiController::class,         'checkAvailability']);
         Route::get('movements',  [StockMovementInquiryController::class, 'index']);
+
+        // ── Inventory Reports ─────────────────────────────────────────────────
+        Route::get('reports/valuation',     [InventoryReportController::class, 'valuation']);
+        Route::get('reports/reorder',       [InventoryReportController::class, 'reorder']);
+        Route::get('reports/aging',         [InventoryReportController::class, 'aging']);
+        Route::get('reports/slow-moving',   [InventoryReportController::class, 'slowMoving']);
+        Route::get('reports/warehouse',     [InventoryReportController::class, 'warehouseSummary']);
 
         // Item Categories
         Route::get('item-categories',          [ItemCategoryController::class, 'index']);
@@ -574,6 +603,13 @@ Route::middleware('auth:api')->group(function () {
         Route::post('packaging-receives',             [PackagingReceiveController::class, 'store']);
         Route::get('packaging-receives/{id}',         [PackagingReceiveController::class, 'show']);
         Route::delete('packaging-receives/{id}',      [PackagingReceiveController::class, 'destroy']);
+
+        // Weighbridge
+        Route::get('weighbridge',                     [\App\Http\Controllers\Inventory\WeighbridgeController::class, 'index']);
+        Route::post('weighbridge',                    [\App\Http\Controllers\Inventory\WeighbridgeController::class, 'store']);
+        Route::get('weighbridge/stats',               [\App\Http\Controllers\Inventory\WeighbridgeController::class, 'stats']);
+        Route::get('weighbridge/read-scale',          [\App\Http\Controllers\Inventory\WeighbridgeController::class, 'readScale']);
+        Route::post('weighbridge/{id}/apply',         [\App\Http\Controllers\Inventory\WeighbridgeController::class, 'apply']);
     });
 
     // ── Sales Maintenance ────────────────────────────────────────────────────
@@ -655,6 +691,7 @@ Route::middleware('auth:api')->group(function () {
         Route::post('quotations/{id}/convert-to-po',                [PurchaseQuotationController::class, 'convertToPo']);
 
         // Purchase Orders (type: po | grn | invoice via ?type=)
+        Route::get('orders/grn-items-for-invoice',              [PurchaseOrderController::class, 'grnItemsForInvoice']);
         Route::get('orders',                                    [PurchaseOrderController::class, 'index']);
         Route::post('orders',                                   [PurchaseOrderController::class, 'store']);
         Route::get('orders/{id}',                               [PurchaseOrderController::class, 'show']);
@@ -664,19 +701,32 @@ Route::middleware('auth:api')->group(function () {
         Route::post('orders/{id}/hod-approve',                  [PurchaseOrderController::class, 'hodApprove']);
         Route::post('orders/{id}/finance-approve',              [PurchaseOrderController::class, 'financeApprove']);
         Route::post('orders/{id}/ceo-approve',                  [PurchaseOrderController::class, 'ceoApprove']);
+        Route::post('orders/{id}/receive',                      [PurchaseOrderController::class, 'receiveGoods']);
         Route::post('orders/{id}/reject',                       [PurchaseOrderController::class, 'reject']);
+        Route::get('orders/{id}/gl-transactions',               [PurchaseOrderController::class, 'glTransactions']);
 
         // Supplier Credit Notes
         Route::get('supplier-credit-notes/form-data',           [SupplierCreditNoteController::class, 'formData']);
         Route::get('supplier-credit-notes/received-items',      [SupplierCreditNoteController::class, 'receivedItems']);
         Route::get('supplier-credit-notes',                     [SupplierCreditNoteController::class, 'index']);
         Route::post('supplier-credit-notes',                    [SupplierCreditNoteController::class, 'store']);
+        Route::get('supplier-credit-notes/{id}/gl',            [SupplierCreditNoteController::class, 'glEntries']);
         Route::get('supplier-credit-notes/{id}',                [SupplierCreditNoteController::class, 'show']);
 
         // Supplier Allocations
         Route::get('supplier-allocations',                      [SupplierAllocationController::class, 'index']);
         Route::get('supplier-allocation-inquiry',               [SupplierAllocationController::class, 'inquiry']);
         Route::get('supplier-transaction-inquiry',              [SupplierAllocationController::class, 'transactionInquiry']);
+        Route::get('supplier-transaction-allocations',          [SupplierAllocationController::class, 'transactionAllocations']);
+        Route::get('available-payments',                        [SupplierAllocationController::class, 'availablePayments']);
+        Route::get('available-journals',                        [SupplierAllocationController::class, 'availableJournals']);
+        Route::get('invoice-allocations',                       [SupplierAllocationController::class, 'invoiceAllocations']);
+        Route::post('supplier-payment-allocations',             [SupplierAllocationController::class, 'allocatePayment']);
+        Route::post('supplier-journal-allocations',             [SupplierAllocationController::class, 'allocateJournal']);
+        Route::get('available-credit-notes',                    [SupplierAllocationController::class, 'availableCreditNotes']);
+        Route::post('supplier-credit-note-allocations',         [SupplierAllocationController::class, 'allocateCreditNote']);
+        Route::get('credit-note-allocated-invoices',            [SupplierAllocationController::class, 'creditNoteAllocatedInvoices']);
+        Route::get('invoice-full-detail',                       [SupplierAllocationController::class, 'invoiceFullDetail']);
 
         // Payment Vouchers
         Route::get('payment-vouchers/form-data',          [PaymentVoucherController::class, 'formData']);
@@ -758,6 +808,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('sales/creditnote/{id}',            [SalesInvoiceController::class, 'showCredit']);
     Route::put('sales/invoices/{id}',                    [SalesInvoiceController::class, 'update']);
     Route::post('sales/invoices/{id}/place',             [SalesInvoiceController::class, 'place']);
+    Route::post('sales/invoices/{id}/stamp',             [SalesInvoiceController::class, 'stamp']);
     Route::post('sales/invoices/{id}/cancel',            [SalesInvoiceController::class, 'cancel']);
     Route::post('sales/invoices/{id}/items',             [SalesInvoiceController::class, 'addItem']);
     Route::put('sales/invoices/{id}/items/{itemId}',     [SalesInvoiceController::class, 'updateItem']);
@@ -799,6 +850,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('sales/credit-notes/unallocated',               [CreditNoteController::class, 'unallocated']);
     Route::get('sales/credit-notes/{id}',                      [CreditNoteController::class, 'show']);
     Route::post('sales/credit-notes/{id}/place',               [CreditNoteController::class, 'place']);
+    Route::post('sales/credit-notes/{id}/stamp',               [CreditNoteController::class, 'stamp']);
     Route::post('sales/credit-notes/{id}/cancel',              [CreditNoteController::class, 'cancel']);
     Route::post('sales/credit-notes/{id}/allocate-manual',     [CreditNoteController::class, 'allocateManual']);
 
@@ -825,6 +877,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('sales/dashboard/milk-traceability',        [SalesDashboardController::class, 'milkTraceability']);
     Route::get('sales/dashboard/grader-collections',       [SalesDashboardController::class, 'graderCollections']);
     Route::get('sales/dashboard/grader-detail',            [SalesDashboardController::class, 'graderDetail']);
+    Route::get('sales/dashboard/widgets',                  [SalesDashboardController::class, 'widgetData']);
 
     // ── Milk Analytics / Forecast ────────────────────────────────────────────
     Route::get('analytics/milk/forecast',  [MilkForecastController::class, 'forecast']);
@@ -853,6 +906,36 @@ Route::middleware('auth:api')->group(function () {
 
     // ── AI Chat ──────────────────────────────────────────────────────────────
     Route::post('analytics/chat',                  [AiChatController::class, 'chat']);
+
+    // ── Audit ────────────────────────────────────────────────────────────────
+    Route::post('audit/run', [AuditController::class, 'run']);
+
+    // ── eTIMS Setup ──────────────────────────────────────────────────────────
+    Route::get ('etims/status',            [EtimsSetupController::class, 'status']);
+    Route::post('etims/initialize',        [EtimsSetupController::class, 'initialize']);
+    Route::post('etims/sync-codes',        [EtimsSetupController::class, 'syncCodes']);
+    Route::post('etims/sync-item-classes', [EtimsSetupController::class, 'syncItemClasses']);
+    Route::post('etims/sync-branches',     [EtimsSetupController::class, 'syncBranches']);
+    Route::post('etims/sync-notices',      [EtimsSetupController::class, 'syncNotices']);
+
+    // ── eTIMS Settings ───────────────────────────────────────────────────────
+    Route::get ('etims/settings',                 [EtimsSettingsController::class, 'show']);
+    Route::put ('etims/settings',                 [EtimsSettingsController::class, 'update']);
+    Route::post('etims/settings/test-connection', [EtimsSettingsController::class, 'testConnection']);
+
+    // ── eTIMS Maintenance ────────────────────────────────────────────────────
+    Route::get ('etims/items',                        [EtimsController::class, 'items']);
+    Route::put ('etims/items/{id}',                   [EtimsController::class, 'updateItem']);
+    Route::post('etims/items/{id}/register',          [EtimsController::class, 'registerItem']);
+    Route::post('etims/items/register-all',           [EtimsController::class, 'registerAllItems']);
+    Route::get ('etims/items/kra',                    [EtimsController::class, 'kraItems']);
+    Route::get ('etims/purchases',                    [EtimsController::class, 'purchases']);
+    Route::post('etims/purchases/{id}/register',      [EtimsController::class, 'registerPurchase']);
+    Route::get ('etims/purchases/kra',                [EtimsController::class, 'kraPurchases']);
+    Route::get ('etims/invoices',                     [EtimsController::class, 'invoices']);
+    Route::get ('etims/stock/kra',                    [EtimsController::class, 'kraStock']);
+    Route::post('etims/stock/movement',               [EtimsController::class, 'saveStockMovement']);
+    Route::get ('etims/customers/lookup',             [EtimsController::class, 'lookupCustomer']);
     Route::get('sales/mpesa/tills',                       [MpesaController::class, 'tills']);
     Route::get('sales/mpesa/status',                      [MpesaController::class, 'checkStatus']);
     Route::get('sales/mpesa',                             [MpesaController::class, 'index']);
@@ -879,6 +962,7 @@ Route::middleware('auth:api')->group(function () {
     // ── Farmers Maintenance ───────────────────────────────────────────────────
     Route::prefix('farmers')->group(function () {
         Route::get('kpis',                      [FarmerKpiController::class,    'index']);
+        Route::get('collection-chart',          [FarmerKpiController::class,    'collectionChart']);
 
         Route::get('banks',                     [FarmerBankController::class, 'index']);
         Route::post('banks',                    [FarmerBankController::class, 'store']);
@@ -992,6 +1076,10 @@ Route::middleware('auth:api')->group(function () {
         Route::post('farmer-payment/batch/{id}/retry', [FarmerPaymentProcessController::class, 'retry']);
         Route::get('farmer-payment/batch/history',     [FarmerPaymentProcessController::class, 'history']);
 
+        // Farmer Payment Schedule Report
+        Route::get('farmer-payment-schedule/form-data', [\App\Http\Controllers\Farmers\FarmerPaymentScheduleController::class, 'formData']);
+        Route::get('farmer-payment-schedule',           [\App\Http\Controllers\Farmers\FarmerPaymentScheduleController::class, 'schedule']);
+
         // Milk Location Transfers
         Route::get('milk-location-transfers/form-data',          [MilkLocationTransferController::class, 'formData']);
         Route::get('milk-location-transfers/available-quantity', [MilkLocationTransferController::class, 'availableQuantity']);
@@ -999,10 +1087,11 @@ Route::middleware('auth:api')->group(function () {
         Route::post('milk-location-transfers',                   [MilkLocationTransferController::class, 'store']);
 
         // Farmer Supplier Payments
-        Route::get('supplier-payments/form-data',    [FarmerSupplierPaymentController::class, 'formData']);
-        Route::get('supplier-payments/advance-limit',[FarmerSupplierPaymentController::class, 'advanceLimit']);
-        Route::get('supplier-payments',              [FarmerSupplierPaymentController::class, 'index']);
-        Route::post('supplier-payments',             [FarmerSupplierPaymentController::class, 'store']);
+        Route::get('supplier-payments/form-data',       [FarmerSupplierPaymentController::class, 'formData']);
+        Route::get('supplier-payments/advance-limit',   [FarmerSupplierPaymentController::class, 'advanceLimit']);
+        Route::get('supplier-payments/account-balance', [FarmerSupplierPaymentController::class, 'accountBalance']);
+        Route::get('supplier-payments',                 [FarmerSupplierPaymentController::class, 'index']);
+        Route::post('supplier-payments',                [FarmerSupplierPaymentController::class, 'store']);
 
         // Supplier List Report
         Route::get('supplier-list',                [SupplierListController::class, 'index']);
@@ -1021,6 +1110,36 @@ Route::middleware('auth:api')->group(function () {
         Route::get('import-services/form-data',    [ImportServicesController::class, 'formData']);
         Route::post('import-services/import',      [ImportServicesController::class, 'import']);
 
+        // Service Posting (manual deduction entry)
+        Route::get('service-postings/form-data',   [\App\Http\Controllers\Farmers\ServicePostingController::class, 'formData']);
+        Route::get('service-postings/report',      [\App\Http\Controllers\Farmers\ServicePostingController::class, 'report']);
+        Route::get('service-postings',             [\App\Http\Controllers\Farmers\ServicePostingController::class, 'index']);
+        Route::post('service-postings',            [\App\Http\Controllers\Farmers\ServicePostingController::class, 'store']);
+        Route::delete('service-postings/{id}',     [\App\Http\Controllers\Farmers\ServicePostingController::class, 'destroy']);
+
+        // Milk Supplier History Report
+        Route::get('milk-supplier-report/form-data', [\App\Http\Controllers\Farmers\MilkSupplierReportController::class, 'formData']);
+        Route::get('milk-supplier-report',           [\App\Http\Controllers\Farmers\MilkSupplierReportController::class, 'report']);
+
+        // Milk Supplier Statement
+        Route::get('milk-supplier-statement/form-data', [\App\Http\Controllers\Farmers\MilkSupplierStatementController::class, 'formData']);
+        Route::get('milk-supplier-statement',           [\App\Http\Controllers\Farmers\MilkSupplierStatementController::class, 'statement']);
+
+        // Milk Supplier Payslips
+        Route::get('milk-payslips/form-data', [\App\Http\Controllers\Farmers\MilkPayslipController::class, 'formData']);
+        Route::get('milk-payslips',           [\App\Http\Controllers\Farmers\MilkPayslipController::class, 'payslips']);
+
+        // Route / Grader Milk Transfers
+        Route::get('route-grader-transfers/form-data', [\App\Http\Controllers\Farmers\RouteGraderTransferController::class, 'formData']);
+        Route::get('route-grader-transfers/search',    [\App\Http\Controllers\Farmers\RouteGraderTransferController::class, 'search']);
+        Route::post('route-grader-transfers/process',  [\App\Http\Controllers\Farmers\RouteGraderTransferController::class, 'process']);
+
+        // Milk Purchase Reversals
+        Route::get('milk-purchase-reversals/form-data', [\App\Http\Controllers\Farmers\MilkPurchaseReversalController::class, 'formData']);
+        Route::get('milk-purchase-reversals/search',    [\App\Http\Controllers\Farmers\MilkPurchaseReversalController::class, 'search']);
+        Route::post('milk-purchase-reversals/{id}',     [\App\Http\Controllers\Farmers\MilkPurchaseReversalController::class, 'reverse']);
+        Route::post('milk-purchase-reversals/bulk',     [\App\Http\Controllers\Farmers\MilkPurchaseReversalController::class, 'bulkReverse']);
+
         // Direct Farmer Invoices
         Route::get('direct-invoices/form-data',          [FarmerDirectInvoiceController::class, 'formData']);
         Route::post('direct-invoices/reserve-reference', [FarmerDirectInvoiceController::class, 'reserveReference']);
@@ -1035,6 +1154,11 @@ Route::middleware('auth:api')->group(function () {
 
     // ── Manufacturing ─────────────────────────────────────────────────────────
     Route::prefix('manufacturing')->group(function () {
+        Route::get('types',          [\App\Http\Controllers\Manufacturing\ManufacturingTypeController::class, 'index']);
+        Route::post('types',         [\App\Http\Controllers\Manufacturing\ManufacturingTypeController::class, 'store']);
+        Route::get('types/{id}',     [\App\Http\Controllers\Manufacturing\ManufacturingTypeController::class, 'show']);
+        Route::put('types/{id}',     [\App\Http\Controllers\Manufacturing\ManufacturingTypeController::class, 'update']);
+        Route::delete('types/{id}',  [\App\Http\Controllers\Manufacturing\ManufacturingTypeController::class, 'destroy']);
         Route::get('kpis',                               [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'kpis']);
         Route::get('work-centres',                       [\App\Http\Controllers\Manufacturing\WorkCentreController::class, 'index']);
         Route::post('work-centres',                      [\App\Http\Controllers\Manufacturing\WorkCentreController::class, 'store']);
@@ -1046,6 +1170,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('boms/{id}',                          [\App\Http\Controllers\Manufacturing\BomController::class,        'show']);
         Route::put('boms/{id}',                          [\App\Http\Controllers\Manufacturing\BomController::class,        'update']);
         Route::delete('boms/{id}',                       [\App\Http\Controllers\Manufacturing\BomController::class,        'destroy']);
+        Route::post('boms/{id}/clone',                   [\App\Http\Controllers\Manufacturing\BomController::class,        'clone']);
         Route::get('work-orders',                        [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'index']);
         Route::post('work-orders',                       [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'store']);
         Route::get('work-orders/{id}',                   [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'show']);
@@ -1055,8 +1180,11 @@ Route::middleware('auth:api')->group(function () {
         Route::post('work-orders/{id}/complete',         [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'complete']);
         Route::post('work-orders/{id}/settle',           [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'settle']);
         Route::post('work-orders/{id}/labour',           [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'addLabour']);
-        Route::post('work-orders/{id}/overhead',         [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'addOverhead']);
-        Route::get('work-orders/{id}/cost-sheet',        [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'costSheet']);
+        Route::post('work-orders/{id}/overhead',              [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'addOverhead']);
+        Route::get('work-orders/{id}/cost-sheet',             [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'costSheet']);
+        Route::patch('work-orders/{id}/items/{itemId}',       [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'updateItem']);
+        Route::get('work-orders/{id}/stages',                 [\App\Http\Controllers\Manufacturing\WorkOrderStageController::class, 'index']);
+        Route::post('work-orders/{id}/stages/{stageCode}/complete', [\App\Http\Controllers\Manufacturing\WorkOrderStageController::class, 'complete']);
         // Production Plans
         Route::get('production-locations',               [\App\Http\Controllers\Manufacturing\ProductionPlanController::class, 'locations']);
         Route::get('items/stock-on-hand',                    [\App\Http\Controllers\Manufacturing\ProductionPlanController::class, 'stockOnHand']);
@@ -1075,6 +1203,21 @@ Route::middleware('auth:api')->group(function () {
         Route::post('production-plans/{id}/execute',                        [\App\Http\Controllers\Manufacturing\ProductionPlanController::class, 'execute']);
         Route::get('production-plans/{id}/execute-detail',                  [\App\Http\Controllers\Manufacturing\ProductionPlanController::class, 'executeDetail']);
         Route::post('production-plans/{id}/items/{itemId}/create-wo',       [\App\Http\Controllers\Manufacturing\ProductionPlanController::class, 'createItemWorkOrder']);
+        // ── Manufacturing Reports ─────────────────────────────────────────────
+        Route::prefix('reports')->group(function () {
+            Route::get('form-data',             [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'formData']);
+            Route::get('production-orders',     [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'productionOrders']);
+            Route::get('efficiency',            [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'efficiency']);
+            Route::get('qc-failure',            [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'qcFailure']);
+            Route::get('bom-utilisation',       [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'bomUtilisation']);
+            Route::get('output-summary',        [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'outputSummary']);
+            Route::get('machine-downtime',      [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'machineDowntime']);
+            Route::get('cost-of-production',    [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'costOfProduction']);
+            Route::get('wo-variance',           [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'woVariance']);
+            Route::get('production-plan-status',[\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'productionPlanStatus']);
+            Route::get('labour-utilisation',    [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'labourUtilisation']);
+            Route::get('export',                [\App\Http\Controllers\Manufacturing\ManufacturingReportController::class, 'export']);
+        });
     });
 
     // ── Blockchain ────────────────────────────────────────────────────────────
@@ -1083,4 +1226,81 @@ Route::middleware('auth:api')->group(function () {
         Route::post('verify',   [\App\Http\Controllers\Blockchain\BlockchainController::class, 'verify']);
         Route::get('history',   [\App\Http\Controllers\Blockchain\BlockchainController::class, 'history']);
     });
+
+    // ── Location tracking (proxy to Go tracking service on :8090) ────────────
+    Route::post('tracking/ingest', function (\Illuminate\Http\Request $req) {
+        $validated = $req->validate([
+            'identifier'  => 'required|string|max:100',
+            'device_type' => 'required|string|max:30',
+            'latitude'    => 'required|numeric|between:-90,90',
+            'longitude'   => 'required|numeric|between:-180,180',
+            'altitude'    => 'nullable|numeric',
+            'speed'       => 'nullable|numeric|min:0',
+            'accuracy'    => 'nullable|numeric|min:0',
+            'fix_time'    => 'nullable|string',
+        ]);
+        $validated['user_id']  = auth()->user()?->user_id ?? $validated['identifier'];
+        $validated['fix_time'] = $validated['fix_time'] ?? now()->toIso8601String();
+
+        try {
+            $resp = \Illuminate\Support\Facades\Http::timeout(5)
+                ->post('http://localhost:8090/tracking/api/positions/ingest', $validated);
+            return response()->json($resp->json(), $resp->status());
+        } catch (\Exception) {
+            // Tracking service unavailable — acknowledge so app does not error
+            return response()->json(['success' => true, 'message' => 'Position received'], 202);
+        }
+    });
+
+    // ── Tracking: current user's own movements ────────────────────────────────
+    Route::get('tracking/me', function (\Illuminate\Http\Request $req) {
+        $identifier = auth()->user()?->user_id;
+        $date = $req->get('date', now()->format('Y-m-d'));
+        try {
+            $go = 'http://localhost:8090/tracking/api';
+            $devicesResp = \Illuminate\Support\Facades\Http::timeout(5)->get("{$go}/devices");
+            $device = collect($devicesResp->json()['data'] ?? [])
+                ->firstWhere('identifier', $identifier);
+            if (!$device) {
+                return response()->json(['success' => true, 'data' => ['device' => null, 'distance' => null, 'positions' => []]]);
+            }
+            $id = $device['id'];
+            [$distResp, $posResp] = [
+                \Illuminate\Support\Facades\Http::timeout(5)->get("{$go}/positions/distance", ['device_id' => $id, 'date' => $date]),
+                \Illuminate\Support\Facades\Http::timeout(5)->get("{$go}/positions", ['device_id' => $id, 'from' => "{$date}T00:00:00Z", 'to' => "{$date}T23:59:59Z", 'order' => 'asc', 'limit' => 2000]),
+            ];
+            return response()->json(['success' => true, 'data' => [
+                'device'    => $device,
+                'distance'  => $distResp->json()['data'] ?? null,
+                'positions' => $posResp->json()['data'] ?? [],
+            ]]);
+        } catch (\Exception) {
+            return response()->json(['success' => true, 'data' => ['device' => null, 'distance' => null, 'positions' => []]]);
+        }
+    });
+
+    Route::get('tracking/me/history', function () {
+        $identifier = auth()->user()?->user_id;
+        try {
+            $go = 'http://localhost:8090/tracking/api';
+            $devicesResp = \Illuminate\Support\Facades\Http::timeout(5)->get("{$go}/devices");
+            $device = collect($devicesResp->json()['data'] ?? [])
+                ->firstWhere('identifier', $identifier);
+            if (!$device) {
+                return response()->json(['success' => true, 'data' => ['device' => null, 'history' => []]]);
+            }
+            $datesResp = \Illuminate\Support\Facades\Http::timeout(5)
+                ->get("{$go}/positions/dates", ['device_id' => $device['id']]);
+            return response()->json(['success' => true, 'data' => [
+                'device'  => $device,
+                'history' => $datesResp->json()['data'] ?? [],
+            ]]);
+        } catch (\Exception) {
+            return response()->json(['success' => true, 'data' => ['device' => null, 'history' => []]]);
+        }
+    });
 });
+
+
+// ── Internal service callbacks (HMAC-authenticated, no Bearer token) ──────────
+Route::post('internal/bulk-approval-result', BulkApprovalCallbackController::class);

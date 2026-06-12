@@ -16,7 +16,7 @@ return new class extends Migration
             $table->string('code', 20)->unique();
             $table->string('code2', 20)->nullable();
             $table->string('name', 150);
-            $table->foreignId('group_id')->nullable()->constrained('gl_account_groups')->nullOnDelete();
+            $table->foreignId('group_id')->nullable()->constrained('gl_account_groups')->noActionOnDelete();
             $table->json('tags')->nullable();
             $table->boolean('inactive')->default(false);
             $table->timestamps();

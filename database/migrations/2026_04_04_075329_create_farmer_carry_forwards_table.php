@@ -21,7 +21,7 @@ return new class extends Migration
 
             $table->unique(['farmer_id', 'to_month', 'to_year']);
             $table->index(['to_month', 'to_year']);
-            $table->foreign('farmer_id')->references('id')->on('farmers')->onDelete('cascade');
+            $table->foreign('farmer_id')->references('id')->on('farmers')->noActionOnDelete();
         });
     }
 

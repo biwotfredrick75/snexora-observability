@@ -28,7 +28,7 @@ return new class extends Migration
 
         Schema::create('inventory_transfer_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('transfer_id')->constrained('inventory_transfers')->cascadeOnDelete();
+            $table->foreignId('transfer_id')->constrained('inventory_transfers')->noActionOnDelete();
             $table->string('stock_id', 20);
             $table->decimal('quantity', 15, 4)->default(0);
             $table->string('unit', 20)->nullable();

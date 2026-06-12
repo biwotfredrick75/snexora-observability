@@ -20,8 +20,8 @@ return new class extends Migration
 
         Schema::create('tax_group_types', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('tax_group_id')->constrained('tax_groups')->cascadeOnDelete();
-            $table->foreignId('tax_type_id')->constrained('tax_types')->cascadeOnDelete();
+            $table->foreignId('tax_group_id')->constrained('tax_groups')->noActionOnDelete();
+            $table->foreignId('tax_type_id')->constrained('tax_types')->noActionOnDelete();
             $table->boolean('shipping')->default(false);
             $table->unique(['tax_group_id', 'tax_type_id']);
         });

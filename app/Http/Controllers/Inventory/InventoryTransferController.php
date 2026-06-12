@@ -26,6 +26,15 @@ class InventoryTransferController extends Controller
         if ($request->filled('from_location_id')) {
             $query->where('from_location_id', $request->from_location_id);
         }
+        if ($request->filled('to_location_id')) {
+            $query->where('to_location_id', $request->to_location_id);
+        }
+        if ($request->filled('from')) {
+            $query->whereDate('date', '>=', $request->from);
+        }
+        if ($request->filled('to')) {
+            $query->whereDate('date', '<=', $request->to);
+        }
 
         return ApiResponse::success($query->get(), 'Transfers retrieved');
     }

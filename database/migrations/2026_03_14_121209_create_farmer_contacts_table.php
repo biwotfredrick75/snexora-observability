@@ -21,7 +21,7 @@ return new class extends Migration
             $table->string('email')->nullable();
             $table->timestamps();
 
-            $table->foreign('farmer_id')->references('id')->on('farmers')->cascadeOnDelete();
+            $table->foreign('farmer_id')->references('id')->on('farmers')->noActionOnDelete();
         });
     }
 

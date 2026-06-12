@@ -20,8 +20,8 @@ return new class extends Migration
             $table->decimal('unit_price', 12, 4)->default(0);
             $table->timestamps();
 
-            $table->foreign('grn_batch_id')->references('id')->on('milk_grn_batches')->cascadeOnDelete();
-            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->cascadeOnDelete();
+            $table->foreign('grn_batch_id')->references('id')->on('milk_grn_batches')->noActionOnDelete();
+            $table->foreign('purchase_item_id')->references('id')->on('milk_purchase_items')->noActionOnDelete();
         });
     }
 

@@ -12,12 +12,12 @@ return new class extends Migration
             $table->id();
             $table->string('cn_no', 25)->unique();
             $table->unsignedBigInteger('inv_id')->nullable();
-            $table->foreign('inv_id')->references('id')->on('sales_invoices')->nullOnDelete();
+            $table->foreign('inv_id')->references('id')->on('sales_invoices')->noActionOnDelete();
             $table->string('debtor_no', 10);
             $table->foreign('debtor_no')->references('debtor_no')->on('customers');
             $table->date('cn_date');
             $table->unsignedBigInteger('reason_id')->nullable();
-            $table->foreign('reason_id')->references('id')->on('credit_note_reasons')->nullOnDelete();
+            $table->foreign('reason_id')->references('id')->on('credit_note_reasons')->noActionOnDelete();
             $table->integer('location_id')->nullable();
             $table->decimal('sub_total', 15, 2)->default(0);
             $table->decimal('amount_total', 15, 2)->default(0);
@@ -30,7 +30,7 @@ return new class extends Migration
         Schema::create('credit_note_items', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('cn_id');
-            $table->foreign('cn_id')->references('id')->on('credit_notes')->onDelete('cascade');
+            $table->foreign('cn_id')->references('id')->on('credit_notes')->noActionOnDelete();
             $table->string('stock_id', 20);
             $table->string('description', 200);
             $table->decimal('qty', 12, 2);

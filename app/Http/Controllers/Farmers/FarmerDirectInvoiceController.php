@@ -102,14 +102,26 @@ class FarmerDirectInvoiceController extends Controller
             ->where('status', 'placed')
             ->sum('amount_total');
 
-        // Debt: total milk purchases this month (unpaid)
-        $totalMilk = (float) DB::table('milk_purchase_items')
+        // Milk this month: quantity + gross value
+        $milkAgg = DB::table('milk_purchase_items')
             ->join('milk_purchases', 'milk_purchases.id', '=', 'milk_purchase_items.purchase_id')
             ->where('milk_purchases.route_id', $farmer->route_id)
             ->whereMonth('milk_purchases.invoice_date', now()->month)
             ->whereYear('milk_purchases.invoice_date', now()->year)
             ->where('milk_purchase_items.farmer_id', $farmerId)
-            ->sum('milk_purchase_items.quantity');
+            ->selectRaw('COALESCE(SUM(quantity),0) as qty, COALESCE(SUM(total_price),0) as value')
+            ->first();
+
+        $totalMilk  = (float) ($milkAgg->qty   ?? 0);
+        $milkValue  = (float) ($milkAgg->value  ?? 0);
+
+        // Invoice credit limit
+        $prefs         = DB::table('company_preferences')->first();
+        $allowInvoicing = (bool) ($prefs->allow_farmer_invoicing ?? false);
+        $limitPercent   = (float) ($prefs->farmer_invoice_limit_percent ?? 0);
+        $invoiceLimit   = ($allowInvoicing && $limitPercent > 0)
+            ? round($milkValue * $limitPercent / 100, 2)
+            : null;
 
         $paymentTerms = null;
         if ($farmer->payment_terms_id) {
@@ -119,14 +131,17 @@ class FarmerDirectInvoiceController extends Controller
         }
 
         return ApiResponse::success([
-            'current_credit'  => $currentCredit,
-            'current_debt'    => 0,
-            'total_milk'      => $totalMilk,
-            'payment_terms'   => $paymentTerms,
-            'price_list_label'=> '',
-            'deliver_to'      => $farmer->full_name ?? '',
-            'address'         => $farmer->address   ?? '',
-            'phone'           => $farmer->phone      ?? '',
+            'current_credit'         => $currentCredit,
+            'current_debt'           => 0,
+            'total_milk'             => $totalMilk,
+            'milk_value'             => round($milkValue, 2),
+            'allow_farmer_invoicing' => $allowInvoicing,
+            'invoice_limit'          => $invoiceLimit,
+            'payment_terms'          => $paymentTerms,
+            'price_list_label'       => '',
+            'deliver_to'             => $farmer->full_name ?? '',
+            'address'                => $farmer->address   ?? '',
+            'phone'                  => $farmer->phone     ?? '',
         ], 'Farmer info retrieved');
     }
 
@@ -226,6 +241,39 @@ class FarmerDirectInvoiceController extends Controller
 
         $glSetting = DB::table('gl_settings')->first();
         $company   = DB::table('company_preferences')->first();
+
+        // ── Farmer invoice credit limit check ─────────────────────────────────
+        if ($company && $company->allow_farmer_invoicing && $company->farmer_invoice_limit_percent > 0) {
+            $farmer = DB::table('farmers')->where('id', $invoice->farmer_id)->first();
+            if ($farmer) {
+                $milkValue = (float) DB::table('milk_purchase_items')
+                    ->join('milk_purchases', 'milk_purchases.id', '=', 'milk_purchase_items.purchase_id')
+                    ->where('milk_purchases.route_id', $farmer->route_id)
+                    ->whereMonth('milk_purchases.invoice_date', now()->month)
+                    ->whereYear('milk_purchases.invoice_date', now()->year)
+                    ->where('milk_purchase_items.farmer_id', $invoice->farmer_id)
+                    ->sum('milk_purchase_items.total_price');
+
+                $limit = round($milkValue * (float)$company->farmer_invoice_limit_percent / 100, 2);
+
+                $alreadyInvoiced = (float) FarmerDirectInvoice::where('farmer_id', $invoice->farmer_id)
+                    ->where('status', 'placed')
+                    ->whereMonth('invoice_date', now()->month)
+                    ->whereYear('invoice_date', now()->year)
+                    ->where('id', '!=', $invoice->id)
+                    ->sum('amount_total');
+
+                if ($limit > 0 && ($alreadyInvoiced + $invoice->amount_total) > $limit) {
+                    return ApiResponse::error(
+                        sprintf(
+                            'Invoice exceeds the allowed credit limit of KES %.2f. Already invoiced: KES %.2f, This invoice: KES %.2f.',
+                            $limit, $alreadyInvoiced, $invoice->amount_total
+                        ),
+                        422
+                    );
+                }
+            }
+        }
 
         return DB::transaction(function () use ($invoice, $glSetting, $company) {
             $invoice->update(['status' => 'placed']);

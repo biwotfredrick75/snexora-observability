@@ -14,7 +14,7 @@ class BomController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Bom::with('items');
+        $query = Bom::with(['items', 'mfgType:id,code,name']);
 
         if ($request->filled('product_code')) {
             $query->where('product_code', $request->product_code);
@@ -58,6 +58,7 @@ class BomController extends Controller
             'version'            => 'nullable|string|max:20',
             'standard_batch_qty' => 'required|numeric|min:0.0001',
             'batch_unit'         => 'nullable|string|max:20',
+            'mfg_type_id'        => 'nullable|integer|exists:manufacturing_types,id',
             'is_active'          => 'boolean',
             'items'              => 'required|array|min:1',
             'items.*.component_code' => 'required|string|max:20|exists:items,stock_id',
@@ -79,6 +80,7 @@ class BomController extends Controller
                 'version'            => $data['version'] ?? '1.0',
                 'standard_batch_qty' => $data['standard_batch_qty'],
                 'batch_unit'         => $data['batch_unit'] ?? '',
+                'mfg_type_id'        => $data['mfg_type_id'] ?? null,
                 'is_active'          => $data['is_active'] ?? true,
                 'created_by'         => auth()->user()?->user_id ?? '',
             ]);
@@ -114,6 +116,7 @@ class BomController extends Controller
             'version'            => 'nullable|string|max:20',
             'standard_batch_qty' => 'required|numeric|min:0.0001',
             'batch_unit'         => 'nullable|string|max:20',
+            'mfg_type_id'        => 'nullable|integer|exists:manufacturing_types,id',
             'is_active'          => 'boolean',
             'items'              => 'required|array|min:1',
             'items.*.component_code' => 'required|string|max:20|exists:items,stock_id',
@@ -130,6 +133,7 @@ class BomController extends Controller
                 'version'            => $data['version'] ?? '1.0',
                 'standard_batch_qty' => $data['standard_batch_qty'],
                 'batch_unit'         => $data['batch_unit'] ?? '',
+                'mfg_type_id'        => $data['mfg_type_id'] ?? null,
                 'is_active'          => $data['is_active'] ?? true,
             ]);
 
@@ -160,18 +164,64 @@ class BomController extends Controller
         return ApiResponse::deleted('BOM deleted');
     }
 
+    /** POST /boms/{id}/clone — copy an existing BOM as a starting point for a new one */
+    public function clone(int $id): JsonResponse
+    {
+        $source = Bom::with('items')->findOrFail($id);
+
+        $bom = DB::transaction(function () use ($source) {
+            $max   = Bom::lockForUpdate()->max('id') ?? 0;
+            $bomNo = 'BOM-' . str_pad($max + 1, 5, '0', STR_PAD_LEFT);
+
+            $bom = Bom::create([
+                'bom_no'             => $bomNo,
+                'product_code'       => $source->product_code,
+                'description'        => $source->description . ' (copy)',
+                'version'            => $source->version . '-copy',
+                'standard_batch_qty' => $source->standard_batch_qty,
+                'batch_unit'         => $source->batch_unit,
+                'is_active'          => false,  // start inactive so user can review
+                'created_by'         => auth()->user()?->user_id ?? '',
+            ]);
+
+            $bom->update(['bom_no' => 'BOM-' . str_pad($bom->id, 5, '0', STR_PAD_LEFT)]);
+
+            foreach ($source->items as $idx => $line) {
+                BomItem::create([
+                    'bom_id'         => $bom->id,
+                    'component_code' => $line->component_code,
+                    'description'    => $line->description,
+                    'qty_required'   => $line->qty_required,
+                    'unit'           => $line->unit,
+                    'waste_pct'      => $line->waste_pct,
+                    'sort_order'     => $idx + 1,
+                ]);
+            }
+
+            return $bom->fresh(['items']);
+        });
+
+        return ApiResponse::created($bom, "BOM cloned as {$bom->bom_no}");
+    }
+
     /** Items search for BOM line autocomplete */
     public function itemsSearch(Request $request): JsonResponse
     {
-        $q = $request->get('q', '');
-        $items = DB::table('items')
+        $q    = $request->get('q', '');
+        $query = DB::table('items')
             ->where('inactive', 0)
             ->where(fn ($qb) => $qb
                 ->where('stock_id', 'like', "%$q%")
                 ->orWhere('description', 'like', "%$q%")
-            )
-            ->limit(30)
-            ->get(['stock_id', 'description', 'units', 'purchase_cost']);
+            );
+
+        // When searching for a BOM's finished product, exclude raw/bought items (B flag)
+        // Allow M (manufactured), D (description/assembled), F (fabricated/kit)
+        if ($request->boolean('manufactured')) {
+            $query->whereIn('mb_flag', ['M', 'D', 'F']);
+        }
+
+        $items = $query->limit(30)->get(['stock_id', 'description', 'units', 'purchase_cost', 'mb_flag']);
 
         return ApiResponse::success($items, 'Items retrieved');
     }

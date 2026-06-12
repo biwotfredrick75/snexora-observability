@@ -23,7 +23,7 @@ class CheckoffServiceController extends Controller
     {
         $data = $request->validate([
             'gl_account'   => 'nullable|string|max:50',
-            'service_type' => 'nullable|string|max:100',
+            'service_type' => 'required|in:Deduction,Claim',
             'service_name' => 'required|string|max:150',
             'active'       => 'sometimes|boolean',
         ]);
@@ -36,7 +36,7 @@ class CheckoffServiceController extends Controller
         $service = CheckoffService::findOrFail($id);
         $data    = $request->validate([
             'gl_account'   => 'nullable|string|max:50',
-            'service_type' => 'nullable|string|max:100',
+            'service_type' => 'sometimes|in:Deduction,Claim',
             'service_name' => 'sometimes|string|max:150',
             'active'       => 'sometimes|boolean',
         ]);

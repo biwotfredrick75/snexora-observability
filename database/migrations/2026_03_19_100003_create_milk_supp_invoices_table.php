@@ -23,8 +23,8 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index('trans_no');
-            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->cascadeOnDelete();
-            $table->foreign('grn_batch_id')->references('id')->on('milk_grn_batches')->cascadeOnDelete();
+            $table->foreign('purchase_id')->references('id')->on('milk_purchases')->noActionOnDelete();
+            $table->foreign('grn_batch_id')->references('id')->on('milk_grn_batches')->noActionOnDelete();
         });
     }
 
