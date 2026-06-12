@@ -324,15 +324,16 @@ class SalesDashboardController extends Controller
         $agedResult['total'] = round(array_sum($aged), 2);
 
         // ── Stock alerts: items below reorder level ────────────────────────────
+        // item_reorder_levels.item_id → items.id; join stock_movements via items.stock_id
         $stockAlerts = DB::table('item_reorder_levels as rl')
-            ->join('items as it', 'it.stock_id', '=', 'rl.stock_id')
+            ->join('items as it', 'it.id', '=', 'rl.item_id')
             ->join('inventory_locations as il', 'il.id', '=', 'rl.location_id')
             ->joinSub(
                 DB::table('stock_movements')
                     ->select('stock_id', 'loc_code', DB::raw('SUM(qty) as balance'))
                     ->groupBy('stock_id', 'loc_code'),
                 'bal',
-                fn($j) => $j->on('bal.stock_id', '=', 'rl.stock_id')
+                fn($j) => $j->on('bal.stock_id', '=', 'it.stock_id')
                              ->on('bal.loc_code',  '=', 'il.code')
             )
             ->where('rl.reorder_level', '>', 0)
@@ -378,9 +379,10 @@ class SalesDashboardController extends Controller
         $pendingPoCount = $poStatuses->sum('count');
         $pendingPoTotal = round($poStatuses->sum('total'), 2);
 
-        // ── Revenue trend: daily invoice totals for the period ────────────────
+        // ── Revenue trend: daily invoice totals — always last 30 days ─────────
+        $trendFrom = now()->parse($to)->subDays(29)->toDateString();
         $trend = DB::table('sales_invoices')
-            ->whereBetween('invoice_date', [$from, $to])
+            ->whereBetween('invoice_date', [$trendFrom, $to])
             ->whereNotIn('status', ['cancelled', 'draft'])
             ->selectRaw('invoice_date as date, COALESCE(SUM(amount_total),0) as revenue')
             ->groupBy('invoice_date')
