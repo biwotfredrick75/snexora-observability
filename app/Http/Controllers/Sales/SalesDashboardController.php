@@ -303,11 +303,11 @@ class SalesDashboardController extends Controller
         $invoices = DB::table('sales_invoices as i')
             ->leftJoin(DB::raw('(SELECT inv_id, SUM(amount) as alloc FROM debtor_allocations GROUP BY inv_id) a'), 'a.inv_id', '=', 'i.id')
             ->where('i.status', 'placed')
+            ->whereRaw('COALESCE(i.amount_total - ISNULL(a.alloc,0), i.amount_total) > 0')
             ->selectRaw('
                 COALESCE(i.due_date, i.invoice_date) as due,
                 COALESCE(i.amount_total - ISNULL(a.alloc,0), i.amount_total) as balance
             ')
-            ->havingRaw('balance > 0')
             ->get();
 
         $aged = ['current' => 0, 'd30' => 0, 'd60' => 0, 'd90' => 0, 'd90plus' => 0];
@@ -324,16 +324,16 @@ class SalesDashboardController extends Controller
         $agedResult['total'] = round(array_sum($aged), 2);
 
         // ── Stock alerts: items below reorder level ────────────────────────────
-        // item_reorder_levels.item_id → items.id; join stock_movements via items.stock_id
+        // items PK is stock_id (no id column); item_reorder_levels also has stock_id
         $stockAlerts = DB::table('item_reorder_levels as rl')
-            ->join('items as it', 'it.id', '=', 'rl.item_id')
+            ->join('items as it', 'it.stock_id', '=', 'rl.stock_id')
             ->join('inventory_locations as il', 'il.id', '=', 'rl.location_id')
             ->joinSub(
                 DB::table('stock_movements')
                     ->select('stock_id', 'loc_code', DB::raw('SUM(qty) as balance'))
                     ->groupBy('stock_id', 'loc_code'),
                 'bal',
-                fn($j) => $j->on('bal.stock_id', '=', 'it.stock_id')
+                fn($j) => $j->on('bal.stock_id', '=', 'rl.stock_id')
                              ->on('bal.loc_code',  '=', 'il.code')
             )
             ->where('rl.reorder_level', '>', 0)
