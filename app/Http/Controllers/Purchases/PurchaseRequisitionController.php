@@ -29,7 +29,7 @@ class PurchaseRequisitionController extends Controller
         if ($request->to)       $q->where('requisition_date', '<=', $request->to);
         if ($request->pr_no)    $q->where('pr_no', 'like', "%{$request->pr_no}%");
 
-        $prs = $q->orderByDesc('id')->get();
+        $prs = $q->orderByDesc('id')->limit(500)->get();
         return ApiResponse::success($prs, 'Requisitions retrieved');
     }
 

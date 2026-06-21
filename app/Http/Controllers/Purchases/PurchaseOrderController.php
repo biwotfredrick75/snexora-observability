@@ -41,7 +41,7 @@ class PurchaseOrderController extends Controller
         if ($request->to)          $q->where('order_date', '<=', $request->to);
         if ($request->po_no)       $q->where('po_no', 'like', "%{$request->po_no}%");
 
-        $pos = $q->orderByDesc('id')->get();
+        $pos = $q->orderByDesc('id')->limit(500)->get();
         return ApiResponse::success($pos, 'Orders retrieved');
     }
 
