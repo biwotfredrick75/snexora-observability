@@ -200,7 +200,7 @@ class PosController extends Controller
 
         $stockIds = $itemList->pluck('stock_id');
 
-        $qtyQuery = StockMovement::whereIn('stock_id', $stockIds)->whereIn('type', [20, 26, 13]);
+        $qtyQuery = StockMovement::whereIn('stock_id', $stockIds);
         if ($locCode !== '') {
             $qtyQuery->where('loc_code', $locCode);
         }
