@@ -11,8 +11,7 @@ use Illuminate\Support\Facades\DB;
 class JournalInquiryController extends Controller
 {
     // Strips per-farmer suffix (-F<id>) so batch entries collapse into one row.
-    // SQL Server: use PATINDEX + LEFT instead of REGEXP_REPLACE (MySQL-only).
-    private const BATCH_EXPR = "CASE WHEN PATINDEX('%-F[0-9]%', gt.reference) > 0 THEN LEFT(gt.reference, PATINDEX('%-F[0-9]%', gt.reference) - 1) ELSE gt.reference END";
+    private const BATCH_EXPR = "REGEXP_REPLACE(gt.reference, '-F[0-9]+$', '')";
 
     // gld_transactions.type uses FrontAccounting-style numeric codes — these
     // don't correspond to transaction_references.id (that's an unrelated
@@ -82,7 +81,7 @@ class JournalInquiryController extends Controller
             'batch_ref' => 'required|string',
         ]);
 
-        $bx = "CASE WHEN PATINDEX('%-F[0-9]%', gt.reference) > 0 THEN LEFT(gt.reference, PATINDEX('%-F[0-9]%', gt.reference) - 1) ELSE gt.reference END";
+        $bx = "REGEXP_REPLACE(gt.reference, '-F[0-9]+$', '')";
 
         $lines = DB::table('gld_transactions as gt')
             ->leftJoin('gl_accounts as cm', 'cm.code', '=', 'gt.account_code')
