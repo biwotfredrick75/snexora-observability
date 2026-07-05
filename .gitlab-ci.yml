@@ -29,16 +29,20 @@ deploy:
       lftp -c "
         set ftp:ssl-allow yes;
         set ssl:verify-certificate no;
+        set net:timeout 20;
+        set net:max-retries 3;
+        set net:reconnect-interval-base 5;
+        set net:reconnect-interval-max 15;
         open -u $FTP_USER,$FTP_PASSWORD $FTP_HOST;
         cd ..;
         mkdir -p backend;
         cd backend;
         mirror --reverse --verbose
-          --exclude=^\.env$
-          --exclude=^\.git/
-          --exclude=^tests/
-          --exclude=^\.gitlab-ci\.yml$
-          --exclude=^storage/logs/
+          --exclude-glob .env
+          --exclude-glob .git/
+          --exclude-glob tests/
+          --exclude-glob .gitlab-ci.yml
+          --exclude-glob storage/logs/
           . .;
         bye"
   only:
