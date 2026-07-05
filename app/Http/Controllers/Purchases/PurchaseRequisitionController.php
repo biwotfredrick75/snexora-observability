@@ -30,6 +30,21 @@ class PurchaseRequisitionController extends Controller
         if ($request->pr_no)    $q->where('pr_no', 'like', "%{$request->pr_no}%");
 
         $prs = $q->orderByDesc('id')->limit(500)->get();
+
+        // Flag PRs that have a received PO so the RFQ screen can disable them
+        $prNos = $prs->pluck('pr_no')->filter()->values()->all();
+        $receivedPrNos = DB::table('purchase_orders')
+            ->whereIn('reference', $prNos)
+            ->where('status', 'received')
+            ->pluck('reference')
+            ->flip()
+            ->all();
+
+        $prs = $prs->map(function ($pr) use ($receivedPrNos) {
+            $pr->has_received_po = isset($receivedPrNos[$pr->pr_no]);
+            return $pr;
+        });
+
         return ApiResponse::success($prs, 'Requisitions retrieved');
     }
 

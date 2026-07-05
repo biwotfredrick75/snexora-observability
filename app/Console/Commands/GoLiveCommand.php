@@ -267,20 +267,7 @@ class GoLiveCommand extends Command
     private function disableFkConstraints(array $tables): void
     {
         try {
-            $placeholders = implode(',', array_fill(0, count($tables), '?'));
-            $fks = DB::select("
-                SELECT fk.name AS fk_name,
-                       OBJECT_NAME(fk.parent_object_id) AS child_table
-                FROM sys.foreign_keys fk
-                INNER JOIN sys.foreign_key_columns fkc
-                    ON fk.object_id = fkc.constraint_object_id
-                WHERE OBJECT_NAME(fkc.referenced_object_id) IN ({$placeholders})
-                   OR OBJECT_NAME(fk.parent_object_id) IN ({$placeholders})
-            ", array_merge($tables, $tables));
-
-            foreach ($fks as $fk) {
-                DB::statement("ALTER TABLE [{$fk->child_table}] NOCHECK CONSTRAINT [{$fk->fk_name}]");
-            }
+            DB::statement('SET FOREIGN_KEY_CHECKS = 0');
         } catch (\Throwable $e) {
             $this->warn('  Could not disable FK constraints: ' . $e->getMessage());
         }
@@ -289,20 +276,7 @@ class GoLiveCommand extends Command
     private function enableFkConstraints(array $tables): void
     {
         try {
-            $placeholders = implode(',', array_fill(0, count($tables), '?'));
-            $fks = DB::select("
-                SELECT fk.name AS fk_name,
-                       OBJECT_NAME(fk.parent_object_id) AS child_table
-                FROM sys.foreign_keys fk
-                INNER JOIN sys.foreign_key_columns fkc
-                    ON fk.object_id = fkc.constraint_object_id
-                WHERE OBJECT_NAME(fkc.referenced_object_id) IN ({$placeholders})
-                   OR OBJECT_NAME(fk.parent_object_id) IN ({$placeholders})
-            ", array_merge($tables, $tables));
-
-            foreach ($fks as $fk) {
-                DB::statement("ALTER TABLE [{$fk->child_table}] WITH CHECK CHECK CONSTRAINT [{$fk->fk_name}]");
-            }
+            DB::statement('SET FOREIGN_KEY_CHECKS = 1');
         } catch (\Throwable $e) {
             $this->warn('  Could not re-enable FK constraints: ' . $e->getMessage());
         }

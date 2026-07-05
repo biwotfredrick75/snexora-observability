@@ -55,8 +55,9 @@ class CreditNote extends Model
         $year = now()->year;
         $last = static::where('cn_no', 'like', "CN/%/{$year}")
             ->lockForUpdate()
-            ->orderByRaw('CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(cn_no, \'/\', 2), \'/\', -1) AS UNSIGNED) DESC')
-            ->value('cn_no');
+            ->pluck('cn_no')
+            ->sortByDesc(fn($n) => (int) (explode('/', $n)[1] ?? 0))
+            ->first();
 
         $seq = 1;
         if ($last) {

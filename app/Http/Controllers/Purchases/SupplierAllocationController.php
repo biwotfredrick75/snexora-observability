@@ -93,7 +93,7 @@ class SupplierAllocationController extends Controller
                 })
                 ->whereIn('po.type', ['grn', 'invoice'])
                 ->whereIn('po.status', ['received', 'ceo_approved'])
-                ->whereBetween(DB::raw('DATE(po.order_date)'), [$from, $to]);
+                ->whereBetween('po.order_date', [$from, $to]);
 
             if ($supplierId) {
                 $q->where('po.supplier_id', $supplierId);
@@ -108,7 +108,7 @@ class SupplierAllocationController extends Controller
                 'po.po_no as reference',
                 's.supplierName as supplier',
                 'po.supplier_reference as supp_reference',
-                DB::raw('DATE(po.order_date) as date'),
+                DB::raw('CAST(po.order_date AS DATE) as date'),
                 DB::raw('NULL as due_date'),
                 DB::raw("'KES' as currency"),
                 DB::raw('0 as debit'),
@@ -151,7 +151,7 @@ class SupplierAllocationController extends Controller
                       ->where('pva.transaction_type', 'Credit Note');
                 })
                 ->where('scn.status', 'posted')
-                ->whereBetween(DB::raw('DATE(scn.date)'), [$from, $to]);
+                ->whereBetween('scn.date', [$from, $to]);
 
             if ($supplierId) {
                 $q->where('scn.supplier_id', $supplierId);
@@ -163,7 +163,7 @@ class SupplierAllocationController extends Controller
                 'scn.scn_no as reference',
                 's.supplierName as supplier',
                 DB::raw('NULL as supp_reference'),
-                DB::raw('DATE(scn.date) as date'),
+                DB::raw('CAST(scn.date AS DATE) as date'),
                 DB::raw('NULL as due_date'),
                 DB::raw("'KES' as currency"),
                 'scn.total as debit',
@@ -183,7 +183,7 @@ class SupplierAllocationController extends Controller
                 ->leftJoin('suppliers as s', 's.supplierId', '=', 'pv.supplier_id')
                 ->leftJoin('payment_voucher_allocations as pva', 'pva.payment_voucher_id', '=', 'pv.id')
                 ->where('pv.status', 'posted')
-                ->whereBetween(DB::raw('DATE(pv.date_paid)'), [$from, $to]);
+                ->whereBetween('pv.date_paid', [$from, $to]);
 
             if ($supplierId) {
                 $q->where('pv.supplier_id', $supplierId);
@@ -195,7 +195,7 @@ class SupplierAllocationController extends Controller
                 'pv.pvn_no as reference',
                 's.supplierName as supplier',
                 'pv.reference as supp_reference',
-                DB::raw('DATE(pv.date_paid) as date'),
+                DB::raw('CAST(pv.date_paid AS DATE) as date'),
                 DB::raw('NULL as due_date'),
                 DB::raw("'KES' as currency"),
                 'pv.amount as debit',
@@ -294,7 +294,7 @@ class SupplierAllocationController extends Controller
                 ->leftJoin('suppliers as s', 's.supplierId', '=', 'po.supplier_id')
                 ->whereIn('po.type', ['grn', 'invoice'])
                 ->whereIn('po.status', ['received', 'ceo_approved'])
-                ->whereBetween(DB::raw('DATE(po.order_date)'), [$from, $to]);
+                ->whereBetween('po.order_date', [$from, $to]);
 
             if ($supplierId) $q->where('po.supplier_id', $supplierId);
             if ($type)       $q->where(DB::raw("CASE po.type WHEN 'grn' THEN 'GRN Receipt' ELSE 'Supplier Invoice' END"), $type);
@@ -306,7 +306,7 @@ class SupplierAllocationController extends Controller
                 'po.po_no as reference',
                 's.supplierName as supplier',
                 'po.supplier_reference as suppliers_reference',
-                DB::raw('DATE(po.order_date) as date'),
+                DB::raw('CAST(po.order_date AS DATE) as date'),
                 DB::raw('NULL as due_date'),
                 DB::raw("'KES' as currency"),
                 'po.amount_total as amount'
@@ -353,7 +353,7 @@ class SupplierAllocationController extends Controller
             $q = DB::table('supplier_credit_notes as scn')
                 ->leftJoin('suppliers as s', 's.supplierId', '=', 'scn.supplier_id')
                 ->where('scn.status', 'posted')
-                ->whereBetween(DB::raw('DATE(scn.date)'), [$from, $to]);
+                ->whereBetween('scn.date', [$from, $to]);
 
             if ($supplierId) $q->where('scn.supplier_id', $supplierId);
 
@@ -364,7 +364,7 @@ class SupplierAllocationController extends Controller
                 'scn.scn_no as reference',
                 's.supplierName as supplier',
                 DB::raw('NULL as suppliers_reference'),
-                DB::raw('DATE(scn.date) as date'),
+                DB::raw('CAST(scn.date AS DATE) as date'),
                 DB::raw('NULL as due_date'),
                 DB::raw("'KES' as currency"),
                 'scn.total as amount'
@@ -376,7 +376,7 @@ class SupplierAllocationController extends Controller
             $q = DB::table('payment_vouchers as pv')
                 ->leftJoin('suppliers as s', 's.supplierId', '=', 'pv.supplier_id')
                 ->where('pv.status', 'posted')
-                ->whereBetween(DB::raw('DATE(pv.date_paid)'), [$from, $to]);
+                ->whereBetween('pv.date_paid', [$from, $to]);
 
             if ($supplierId) $q->where('pv.supplier_id', $supplierId);
 
@@ -387,7 +387,7 @@ class SupplierAllocationController extends Controller
                 'pv.pvn_no as reference',
                 's.supplierName as supplier',
                 'pv.reference as suppliers_reference',
-                DB::raw('DATE(pv.date_paid) as date'),
+                DB::raw('CAST(pv.date_paid AS DATE) as date'),
                 DB::raw('NULL as due_date'),
                 'pv.type as currency_type',
                 DB::raw("'KES' as currency"),

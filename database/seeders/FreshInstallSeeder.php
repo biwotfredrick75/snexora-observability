@@ -97,11 +97,15 @@ class FreshInstallSeeder extends Seeder
         $this->command->info('  [16/18] Seeding manufacturing types...');
         $this->call(ManufacturingTypeSeeder::class);
 
-        // ── 17. Passport personal-access client ───────────────────────────────
-        $this->command->info('  [17/18] Ensuring Passport personal-access client exists...');
+        // ── 17. Casual worker trades ──────────────────────────────────────────
+        $this->command->info('  [17/19] Seeding casual worker trades...');
+        $this->call(CasualWorkerTradeSeeder::class);
+
+        // ── 18. Passport personal-access client ───────────────────────────────
+        $this->command->info('  [18/19] Ensuring Passport personal-access client exists...');
         $this->ensurePassportClient();
 
-        $this->command->info('  [18/18] Done.');
+        $this->command->info('  [19/19] Done.');
         $this->command->info('');
         $this->command->info('✅ Fresh installation complete!');
         $this->command->info('');

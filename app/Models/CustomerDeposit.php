@@ -40,8 +40,9 @@ class CustomerDeposit extends Model
 
         $last = static::where('deposit_no', 'like', "DEP/%/{$year}")
             ->lockForUpdate()
-            ->orderByRaw('CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(deposit_no, \'/\', 2), \'/\', -1) AS UNSIGNED) DESC')
-            ->value('deposit_no');
+            ->pluck('deposit_no')
+            ->sortByDesc(fn($n) => (int) (explode('/', $n)[1] ?? 0))
+            ->first();
 
         $seq = 1;
         if ($last) {

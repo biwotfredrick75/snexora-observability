@@ -103,7 +103,10 @@ class CustomerDepositController extends Controller
             $glSetting      = DB::table('gl_settings')->first();
             $companyPref    = DB::table('company_preferences')->first();
             $debtorsAccount = ($companyPref->debtors_gl_code ?? null) ?: ($glSetting->receivable_account ?? null) ?: 'DEBTORS';
-            $bankAccount    = $deposit->bank_account_code ?: ($glSetting->receivable_account ?? 'BANK');
+            // No bank account picked — there's no dedicated "default bank" GL
+            // setting, so fall back to a placeholder rather than reusing the
+            // receivables account (which is unrelated to cash/bank).
+            $bankAccount    = $deposit->bank_account_code ?: 'BANK';
 
             // DR Bank
             $this->gl($deposit->id, $depositDate, $bankAccount, $amount,

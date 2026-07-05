@@ -39,8 +39,9 @@ class SalesQuotation extends Model
         $year = now()->year;
         $last = static::where('quot_no', 'like', "SQ%/{$year}")
             ->lockForUpdate()
-            ->orderByRaw('CAST(SUBSTRING(quot_no, 3, LOCATE(\'/\', quot_no) - 3) AS UNSIGNED) DESC')
-            ->value('quot_no');
+            ->pluck('quot_no')
+            ->sortByDesc(fn($n) => (int) substr($n, 2, strpos($n, '/') - 2))
+            ->first();
 
         $seq = 1;
         if ($last) {

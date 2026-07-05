@@ -45,8 +45,9 @@ class SalesDelivery extends Model
         $year = now()->year;
         $last = static::where('dn_no', 'like', "DN/%/{$year}")
             ->lockForUpdate()
-            ->orderByRaw('CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(dn_no, \'/\', 2), \'/\', -1) AS UNSIGNED) DESC')
-            ->value('dn_no');
+            ->pluck('dn_no')
+            ->sortByDesc(fn($n) => (int) (explode('/', $n)[1] ?? 0))
+            ->first();
 
         $seq = 1;
         if ($last) {

@@ -56,8 +56,29 @@ class SalesDashboardController extends Controller
             $outstanding = DB::table('sales_invoices as i')
                 ->leftJoin(DB::raw('(SELECT inv_id, SUM(amount) as alloc FROM debtor_allocations GROUP BY inv_id) a'), 'a.inv_id', '=', 'i.id')
                 ->whereNotIn('i.status', ['cancelled'])
-                ->selectRaw('COALESCE(SUM(i.amount_total - ISNULL(a.alloc,0)),0) as outstanding')
+                ->selectRaw('COALESCE(SUM(i.amount_total - IFNULL(a.alloc,0)),0) as outstanding')
                 ->value('outstanding');
+
+            // ── Q2b: Paid / open invoice counts (all-time) + settled-today ───────
+            $paidAgg = DB::table('sales_invoices as i')
+                ->leftJoin(DB::raw("(SELECT inv_id, SUM(amount) as alloc,
+                        MAX(CASE WHEN allocated_date = CURDATE() THEN 1 ELSE 0 END) as settled_today
+                    FROM debtor_allocations GROUP BY inv_id) a"), 'a.inv_id', '=', 'i.id')
+                ->whereNotIn('i.status', ['cancelled'])
+                ->selectRaw("
+                    SUM(CASE WHEN i.amount_total - IFNULL(a.alloc,0) <= 0.005 THEN 1 ELSE 0 END) as paid_count,
+                    SUM(CASE WHEN i.amount_total - IFNULL(a.alloc,0) <= 0.005 AND a.settled_today = 1 THEN 1 ELSE 0 END) as paid_today_count,
+                    SUM(CASE WHEN i.amount_total - IFNULL(a.alloc,0) > 0.005 THEN 1 ELSE 0 END) as open_count
+                ")
+                ->first();
+
+            // ── Q2c: Customers — active count + new this week ────────────────────
+            $customerAgg = DB::table('customers')
+                ->selectRaw('
+                    SUM(CASE WHEN inactive = 0 THEN 1 ELSE 0 END) as active_count,
+                    SUM(CASE WHEN inactive = 0 AND created_at >= ? THEN 1 ELSE 0 END) as new_this_week_count
+                ', [now()->subDays(7)])
+                ->first();
 
             // ── Q3: GL aggregates — COGS + OpEx for all periods in one query ─────
             // (was 9 separate queries)
@@ -113,7 +134,6 @@ class SalesDashboardController extends Controller
             $deposits      = DB::table('customer_deposits')
                 ->selectRaw('COUNT(*) as count, COALESCE(SUM(deposit_amount),0) as total, COALESCE(SUM(unallocated_amount),0) as unallocated')
                 ->first();
-            $customerCount = DB::table('customers')->count();
             $allocations   = DB::table('debtor_allocations')
                 ->selectRaw('COUNT(*) as count, COALESCE(SUM(amount),0) as total')
                 ->first();
@@ -237,9 +257,12 @@ class SalesDashboardController extends Controller
             return [
                 'period'          => ['from' => $from, 'to' => $to, 'prev_from' => $prevFrom, 'prev_to' => $prevTo],
                 'invoices'        => [
-                    'count'       => (int) $invAgg->period_count,
-                    'total'       => $revenue,
-                    'outstanding' => round((float) $outstanding, 2),
+                    'count'            => (int) $invAgg->period_count,
+                    'total'            => $revenue,
+                    'outstanding'      => round((float) $outstanding, 2),
+                    'paid_count'       => (int) $paidAgg->paid_count,
+                    'paid_today_count' => (int) $paidAgg->paid_today_count,
+                    'open_count'       => (int) $paidAgg->open_count,
                 ],
                 'payments'        => [
                     'count'       => (int) $payments->count,
@@ -259,7 +282,8 @@ class SalesDashboardController extends Controller
                     'total'       => (float) $deposits->total,
                     'unallocated' => (float) $deposits->unallocated,
                 ],
-                'customers'       => (int) $customerCount,
+                'customers'              => (int) $customerAgg->active_count,
+                'customers_new_this_week'=> (int) $customerAgg->new_this_week_count,
                 'allocations'     => [
                     'count' => (int) $allocations->count,
                     'total' => (float) $allocations->total,
@@ -303,10 +327,10 @@ class SalesDashboardController extends Controller
         $invoices = DB::table('sales_invoices as i')
             ->leftJoin(DB::raw('(SELECT inv_id, SUM(amount) as alloc FROM debtor_allocations GROUP BY inv_id) a'), 'a.inv_id', '=', 'i.id')
             ->where('i.status', 'placed')
-            ->whereRaw('COALESCE(i.amount_total - ISNULL(a.alloc,0), i.amount_total) > 0')
+            ->whereRaw('COALESCE(i.amount_total - IFNULL(a.alloc,0), i.amount_total) > 0')
             ->selectRaw('
                 COALESCE(i.due_date, i.invoice_date) as due,
-                COALESCE(i.amount_total - ISNULL(a.alloc,0), i.amount_total) as balance
+                COALESCE(i.amount_total - IFNULL(a.alloc,0), i.amount_total) as balance
             ')
             ->get();
 

@@ -29,6 +29,9 @@ class DatabaseSeeder extends Seeder
         // Seed inventory locations
         $this->call(InventoryLocationSeeder::class);
 
+        // Seed casual worker trades and sample workers
+        $this->call(CasualWorkerMaintenanceSeeder::class);
+
         // Seed GL account classes, groups and the full chart of accounts
         $this->call(GlAccountClassSeeder::class);
         $this->call(ChartOfAccountsSeeder::class);

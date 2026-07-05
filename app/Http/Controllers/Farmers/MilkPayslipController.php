@@ -15,6 +15,10 @@ class MilkPayslipController extends Controller
     {
         $routes  = DB::table('milk_routes')->orderBy('route_name')->get(['id', 'route_code', 'route_name']);
         $company = DB::table('company_preferences')->first(['name', 'phone', 'email', 'logo_filename']);
+        $farmers = DB::table('farmers as f')
+            ->leftJoin('milk_routes as r', 'r.id', '=', 'f.route_id')
+            ->orderBy('f.farmer_no')
+            ->get(['f.id', 'f.farmer_no', 'f.full_name', DB::raw('r.route_name')]);
 
         $years = [];
         $currentYear = (int) date('Y');
@@ -22,6 +26,7 @@ class MilkPayslipController extends Controller
 
         return ApiResponse::success([
             'routes'  => $routes,
+            'farmers' => $farmers,
             'company' => $company,
             'years'   => $years,
         ], 'OK');

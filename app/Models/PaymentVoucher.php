@@ -11,7 +11,7 @@ class PaymentVoucher extends Model
     protected $fillable = [
         'pvn_no', 'supplier_id', 'bank_account_code',
         'date_paid', 'reference', 'bank_cheque', 'type',
-        'withholding_tax_amount', 'amount', 'cheque_no',
+        'withholding_tax_id', 'withholding_tax_amount', 'amount', 'cheque_no',
         'memo', 'status', 'created_by',
     ];
 
@@ -31,21 +31,23 @@ class PaymentVoucher extends Model
         return $this->hasMany(PaymentVoucherAllocation::class);
     }
 
+    public function withholdingTax(): BelongsTo
+    {
+        return $this->belongsTo(WithholdingTax::class, 'withholding_tax_id');
+    }
+
     public static function nextPvnNo(): string
     {
         $year = now()->year;
 
         $last = static::where('pvn_no', 'like', "PVN%/{$year}")
             ->lockForUpdate()
-            ->orderByRaw("
-                CAST(
-                    SUBSTRING_INDEX(
-                        SUBSTRING_INDEX(pvn_no, '/', 1),
-                    'PVN', -1
-                ) AS UNSIGNED
-            ) DESC
-            ")
-            ->value('pvn_no');
+            ->pluck('pvn_no')
+            ->sortByDesc(function ($n) {
+                preg_match('/PVN(\d+)\//', $n, $m);
+                return (int) ($m[1] ?? 0);
+            })
+            ->first();
 
         $seq = 1;
 

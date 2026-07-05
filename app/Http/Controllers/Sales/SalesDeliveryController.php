@@ -40,6 +40,20 @@ class SalesDeliveryController extends Controller
         );
     }
 
+    // Qty already returned to stock against this delivery, keyed by stock_id.
+    // Returns are recorded as positive type=26 movements on the delivery's own
+    // trans_no (the original delivery movement itself is always negative).
+    private function returnedQtysByStockId(int $deliveryId)
+    {
+        return DB::table('stock_movements')
+            ->where('trans_no', $deliveryId)
+            ->where('type', StockMovement::TYPE_DELIVERY)
+            ->where('qty', '>', 0)
+            ->groupBy('stock_id')
+            ->selectRaw('TRIM(stock_id) as stock_id, SUM(qty) as returned_qty')
+            ->pluck('returned_qty', 'stock_id');
+    }
+
     // ── Routes ────────────────────────────────────────────────────────────────
 
     public function nextRef(): JsonResponse
@@ -59,8 +73,26 @@ class SalesDeliveryController extends Controller
         if ($v = $request->get('dn_no'))      $query->where('dn_no', 'like', "%{$v}%");
 
         if ($request->boolean('not_invoiced', false)) {
-            $invoicedIds = SalesInvoice::whereNotNull('dn_id')->pluck('dn_id');
-            $query->where('status', 'placed')->whereNotIn('id', $invoicedIds);
+            // Exclude only deliveries that are *fully* invoiced — a delivery with
+            // some qty still left to invoice (partial invoicing) must keep showing up.
+            $deliveredTotals = DB::table('sales_delivery_items')
+                ->select('delivery_id', DB::raw('SUM(qty) as total_qty'))
+                ->groupBy('delivery_id');
+
+            $invoicedTotals = DB::table('sales_invoice_items as ii')
+                ->join('sales_invoices as i', 'ii.inv_id', '=', 'i.id')
+                ->where('i.status', 'placed')
+                ->whereNotNull('i.dn_id')
+                ->select('i.dn_id', DB::raw('SUM(ii.qty) as total_invoiced'))
+                ->groupBy('i.dn_id');
+
+            $fullyInvoicedIds = DB::query()
+                ->fromSub($deliveredTotals, 'd')
+                ->leftJoinSub($invoicedTotals, 'inv', 'inv.dn_id', '=', 'd.delivery_id')
+                ->whereRaw('COALESCE(inv.total_invoiced, 0) >= d.total_qty')
+                ->pluck('d.delivery_id');
+
+            $query->where('status', 'placed')->whereNotIn('id', $fullyInvoicedIds);
         }
 
         $deliveries = $query->paginate(min((int) $request->get('per_page', 30), 200));
@@ -154,7 +186,11 @@ class SalesDeliveryController extends Controller
             $delivery->amount_total = round($subTotal + ($validated['shipping_charge'] ?? 0), 2);
             $delivery->save();
 
-            broadcast(new DashboardEvent('delivery', 'created', ['ref' => $delivery->delivery_no, 'amount' => $delivery->amount_total]));
+            try {
+                broadcast(new DashboardEvent('delivery', 'created', ['ref' => $delivery->dn_no, 'amount' => $delivery->amount_total]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
             return ApiResponse::created($delivery->load('items'), 'Sales delivery created');
         });
     }
@@ -224,10 +260,15 @@ class SalesDeliveryController extends Controller
             $totalDiscounts  = 0.0;
             $totalTax        = 0.0;
 
+            // Resolve stock location code for movements; fall back to first active location
+            $locCode = $delivery->location_id
+                ? DB::table('inventory_locations')->where('id', $delivery->location_id)->value('code')
+                : DB::table('inventory_locations')->where('inactive', 0)->value('code');
+
             foreach ($delivery->items as $dnItem) {
                 $item = DB::table('items')->where('stock_id', $dnItem->stock_id)
                     ->select('cogs_account', 'inventory_account', 'sales_account',
-                             'tax_type_id', 'dimension_id', 'dimension2_id')
+                             'tax_type_id', 'dimension_id', 'dimension2_id', 'mb_flag')
                     ->first();
 
                 if (! $item) continue;
@@ -243,6 +284,29 @@ class SalesDeliveryController extends Controller
 
                 $dimId  = ($item->dimension_id  ?? null) ?: $delivery->dimension_id;
                 $dim2Id = ($item->dimension2_id ?? null) ?: $delivery->dimension2_id;
+
+                // ── Stock movement: goods out (negative qty) ───────────────────
+                // Service items (mb_flag = 'S') aren't stock-controlled — they
+                // have no location, so skip the physical movement entirely.
+                if ($item->mb_flag !== 'S') {
+                    StockMovement::create([
+                        'trans_no'      => $delivery->id,
+                        'stock_id'      => $dnItem->stock_id,
+                        'type'          => StockMovement::TYPE_DELIVERY,
+                        'loc_code'      => $locCode,
+                        'tran_date'     => $tranDate,
+                        'date_moved'    => $tranDate,
+                        'qty'           => -$qty,
+                        'price'         => $dnItem->price,
+                        'standard_cost' => $standardCost,
+                        'reference'     => $dnNo,
+                        'comments'      => $delivery->comments,
+                        'user_name'     => $createdBy,
+                        'vehicle'       => $delivery->vehicle ?? '',
+                        'shift'         => $delivery->shift   ?? '',
+                        'approved'      => 1,
+                    ]);
+                }
 
                 // ── COGS / Inventory ──────────────────────────────────────────
                 if ($item->cogs_account && $item->inventory_account) {
@@ -386,7 +450,11 @@ class SalesDeliveryController extends Controller
                 ]);
             }
 
-            broadcast(new DashboardEvent('delivery', 'placed', ['ref' => $delivery->delivery_no, 'amount' => $delivery->amount_total]));
+            try {
+                broadcast(new DashboardEvent('delivery', 'placed', ['ref' => $delivery->dn_no, 'amount' => $delivery->amount_total]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
             return ApiResponse::success($delivery, 'Sales delivery placed');
         });
     }
@@ -402,7 +470,11 @@ class SalesDeliveryController extends Controller
         }
 
         $delivery->update(['status' => 'cancelled']);
-        broadcast(new DashboardEvent('delivery', 'cancelled', ['ref' => $delivery->delivery_no]));
+        try {
+            broadcast(new DashboardEvent('delivery', 'cancelled', ['ref' => $delivery->dn_no]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
         return ApiResponse::success($delivery, 'Sales delivery cancelled');
     }
 
@@ -556,18 +628,26 @@ class SalesDeliveryController extends Controller
             ->selectRaw('ii.stock_id, SUM(ii.qty) as invoiced_qty')
             ->pluck('invoiced_qty', 'stock_id');
 
-        $items = $delivery->items->map(fn($it) => [
-            'id'            => $it->id,
-            'stock_id'      => $it->stock_id,
-            'description'   => $it->description,
-            'delivered_qty' => (float) $it->qty,
-            'unit'          => $it->unit,
-            'invoiced_qty'  => (float) ($invoicedQtys[$it->stock_id] ?? 0),
-            'this_qty'      => max(0, (float) $it->qty - (float) ($invoicedQtys[$it->stock_id] ?? 0)),
-            'price'         => (float) $it->price,
-            'discount_pct'  => (float) $it->discount_pct,
-            'standard_cost' => (float) $it->standard_cost,
-        ]);
+        // Quantities already returned — returned goods can't be invoiced again
+        $returnedQtys = $this->returnedQtysByStockId($id);
+
+        $items = $delivery->items->map(function ($it) use ($invoicedQtys, $returnedQtys) {
+            $invoiced = (float) ($invoicedQtys[$it->stock_id] ?? 0);
+            $returned = (float) ($returnedQtys[$it->stock_id] ?? 0);
+            return [
+                'id'            => $it->id,
+                'stock_id'      => $it->stock_id,
+                'description'   => $it->description,
+                'delivered_qty' => (float) $it->qty,
+                'unit'          => $it->unit,
+                'invoiced_qty'  => $invoiced,
+                'returned_qty'  => $returned,
+                'this_qty'      => max(0, (float) $it->qty - $invoiced - $returned),
+                'price'         => (float) $it->price,
+                'discount_pct'  => (float) $it->discount_pct,
+                'standard_cost' => (float) $it->standard_cost,
+            ];
+        });
 
         $salesTypes        = DB::table('sales_types')->get(['id', 'type_name']);
         $shippingCompanies = DB::table('shipping_companies')->get(['id', 'name']);
@@ -615,6 +695,9 @@ class SalesDeliveryController extends Controller
     {
         $delivery = SalesDelivery::with('items')->find($id);
         if (! $delivery) return ApiResponse::notFound('Delivery not found');
+        if ($delivery->status !== 'placed') {
+            return ApiResponse::error('Delivery must be placed before it can be invoiced', 422);
+        }
 
         $data = $request->validate([
             'invoice_date'        => ['required', 'date', new \App\Rules\WithinFiscalYear],
@@ -640,11 +723,6 @@ class SalesDeliveryController extends Controller
             $tranDate   = $data['invoice_date'];
             $glSetting  = DB::table('gl_settings')->first();
             $company    = DB::table('company_preferences')->first();
-
-            // Resolve delivery location → loc_code
-            $locCode = $delivery->location_id
-                ? DB::table('inventory_locations')->where('id', $delivery->location_id)->value('code')
-                : null;
 
             $invoice = SalesInvoice::create([
                 'inv_no'              => SalesInvoice::nextInvNo(),
@@ -708,24 +786,9 @@ class SalesDeliveryController extends Controller
                     'line_total'    => $lineTotal,
                 ]);
 
-                // ── Stock movement: goods out (type 26) ───────────────────────
-                StockMovement::create([
-                    'trans_no'      => $invoice->id,
-                    'stock_id'      => $dnItem->stock_id,
-                    'type'          => StockMovement::TYPE_DELIVERY,
-                    'loc_code'      => $locCode,
-                    'tran_date'     => $tranDate,
-                    'date_moved'    => $tranDate,
-                    'qty'           => -$qty,
-                    'price'         => $price,
-                    'standard_cost' => $standardCost,
-                    'reference'     => $invNo,
-                    'comments'      => $data['comments'] ?? null,
-                    'user_name'     => $createdBy,
-                    'vehicle'       => $data['vehicle'] ?? $delivery->vehicle ?? '',
-                    'shift'         => $data['shift']   ?? $delivery->shift   ?? '',
-                    'approved'      => 1,
-                ]);
+                // Stock was already deducted when the delivery was placed
+                // (SalesDeliveryController::place() / dispatchFromOrder()) —
+                // invoicing a delivery only books revenue, it doesn't move stock again.
 
                 // ── GL: Revenue / Tax / Discount ──────────────────────────────
                 $item = DB::table('items')->where('stock_id', $dnItem->stock_id)
@@ -735,13 +798,22 @@ class SalesDeliveryController extends Controller
                 $dimId  = ($item->dimension_id  ?? null) ?: ($data['dimension_id']  ?? $delivery->dimension_id);
                 $dim2Id = ($item->dimension2_id ?? null) ?: ($data['dimension2_id'] ?? $delivery->dimension2_id);
 
-                if ($item && $item->sales_account) {
+                // Fall back to the GL-wide default sales account when the item
+                // itself has none configured — otherwise revenue (and therefore
+                // every GL line for this invoice) silently never gets posted.
+                $salesAccount = ($item->sales_account ?? null) ?: null;
+                $salesAccount = $salesAccount
+                    ?: ($glSetting->items_sales_account ?: null)
+                    ?: ($glSetting->sales_account ?: null)
+                    ?: 'SALES_REVENUE';
+
+                {
                     $gross      = round($qty * $price, 4);
                     $discAmt    = round($gross * $discPct / 100, 4);
                     $netRevenue = $gross - $discAmt;
                     $taxAmount  = 0.0; $taxAccount = null;
 
-                    if ($item->tax_type_id) {
+                    if ($item && $item->tax_type_id) {
                         $taxType = DB::table('tax_types')->where('id', $item->tax_type_id)->first();
                         if ($taxType && (float) $taxType->default_rate > 0) {
                             $taxAmount  = round($netRevenue * (float) $taxType->default_rate / 100, 4);
@@ -753,7 +825,7 @@ class SalesDeliveryController extends Controller
 
                     GldTransaction::create([
                         'trans_no' => $invoice->id, 'type' => StockMovement::TYPE_INVOICE,
-                        'tran_date' => $tranDate, 'account_code' => $item->sales_account,
+                        'tran_date' => $tranDate, 'account_code' => $salesAccount,
                         'reference' => $invNo, 'narration' => "Sales — {$dnItem->description} ({$invNo})",
                         'amount' => -($netRevenue - $taxAmount), 'created_by' => $createdBy,
                         'dimension_id' => $dimId, 'dimension2_id' => $dim2Id,
@@ -826,7 +898,7 @@ class SalesDeliveryController extends Controller
             ->where('type', StockMovement::TYPE_DELIVERY)
             ->where('qty', '<', 0)
             ->groupBy('stock_id', 'loc_code')
-            ->selectRaw('stock_id, loc_code')
+            ->selectRaw('TRIM(stock_id) as stock_id, loc_code')
             ->pluck('loc_code', 'stock_id');
 
         // Resolve loc_code → location name
@@ -835,18 +907,28 @@ class SalesDeliveryController extends Controller
             ->whereIn('code', $locCodes)
             ->pluck('name', 'code');
 
-        $items = $delivery->items->map(function ($it) use ($invoicedQtys, $itemLocCodes, $locNames) {
-            $locCode = $itemLocCodes[$it->stock_id] ?? null;
+        // Goods already returned against this delivery — can't be returned twice
+        $returnedQtys = $this->returnedQtysByStockId($id);
+
+        // "Return Delivery Note" only ever reverses stock — it posts no GL lines,
+        // so it can only safely cover the portion that was never invoiced (no
+        // revenue/Debtors was ever booked for it). Already-invoiced goods need a
+        // proper financial reversal — that's what Credit Notes are for.
+        $items = $delivery->items->map(function ($it) use ($invoicedQtys, $returnedQtys, $itemLocCodes, $locNames) {
+            $locCode  = $itemLocCodes[$it->stock_id] ?? null;
+            $invoiced = (float) ($invoicedQtys[$it->stock_id] ?? 0);
+            $returned = (float) ($returnedQtys[$it->stock_id] ?? 0);
+            $available = max(0, (float) $it->qty - $invoiced - $returned);
             return [
                 'id'           => $it->id,
                 'stock_id'     => $it->stock_id,
                 'description'  => $it->description,
                 'unit'         => $it->unit,
                 'original_qty' => (float) $it->qty,
-                'invoiced_qty' => (float) ($invoicedQtys[$it->stock_id] ?? 0),
-                'returned_qty' => 0,
-                'available_qty'=> (float) ($invoicedQtys[$it->stock_id] ?? 0),
-                'return_qty'   => (float) ($invoicedQtys[$it->stock_id] ?? 0),
+                'invoiced_qty' => $invoiced,
+                'returned_qty' => $returned,
+                'available_qty'=> $available,
+                'return_qty'   => $available,
                 'loc_code'     => $locCode,
                 'loc_name'     => $locCode ? ($locNames[$locCode] ?? $locCode) : null,
             ];
@@ -891,6 +973,38 @@ class SalesDeliveryController extends Controller
             'items.*.return_qty' => 'required|numeric|min:0',
             'items.*.loc_code'   => 'nullable|string',
         ]);
+
+        // Re-validate against the server's own "available to return" figure —
+        // a stale or tampered request must not be able to return more than is
+        // actually available. This screen posts no GL lines, so only the
+        // not-yet-invoiced portion is returnable here (mirrors forReturn()'s
+        // available_qty); already-invoiced goods need a Credit Note instead.
+        $invoicedQtys = DB::table('sales_invoice_items as ii')
+            ->join('sales_invoices as i', 'ii.inv_id', '=', 'i.id')
+            ->where('i.dn_id', $delivery->id)
+            ->where('i.status', 'placed')
+            ->groupBy('ii.stock_id')
+            ->selectRaw('ii.stock_id, SUM(ii.qty) as invoiced_qty')
+            ->pluck('invoiced_qty', 'stock_id');
+
+        $returnedQtys = $this->returnedQtysByStockId($delivery->id);
+
+        $errors = [];
+        foreach ($data['items'] as $itemData) {
+            if (floatval($itemData['return_qty']) <= 0) continue;
+            $dnItem = $delivery->items->firstWhere('id', $itemData['dn_item_id']);
+            if (! $dnItem) continue;
+
+            $invoiced  = (float) ($invoicedQtys[$dnItem->stock_id] ?? 0);
+            $returned  = (float) ($returnedQtys[$dnItem->stock_id] ?? 0);
+            $available = max(0, (float) $dnItem->qty - $invoiced - $returned);
+            if (floatval($itemData['return_qty']) > $available) {
+                $errors[] = "Return qty for \"{$dnItem->description}\" ({$itemData['return_qty']}) exceeds available ({$available}).";
+            }
+        }
+        if (! empty($errors)) {
+            return ApiResponse::validationError(['items' => $errors]);
+        }
 
         return DB::transaction(function () use ($delivery, $data) {
             foreach ($data['items'] as $itemData) {

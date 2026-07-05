@@ -402,8 +402,8 @@ class SalesReportsController extends Controller
             si.amount_total,
             COALESCE(da.paid, 0)                       AS paid_amount,
             (si.amount_total - COALESCE(da.paid,0))    AS balance,
-            GREATEST(0, DATEDIFF(?, si.due_date))      AS days_overdue
-        ", [$today])
+            CASE WHEN DATEDIFF(?, si.due_date) > 0 THEN DATEDIFF(?, si.due_date) ELSE 0 END AS days_overdue
+        ", [$today, $today])
         ->orderBy('si.due_date')
         ->get();
 

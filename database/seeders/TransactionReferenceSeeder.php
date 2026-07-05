@@ -49,6 +49,9 @@ class TransactionReferenceSeeder extends Seeder
             ['trans_type' => 'payroll_run',           'trans_name' => 'Payroll Run',             'prefix' => 'PAY',  'pattern' => '{001}/{YYYY}'],
             ['trans_type' => 'payroll_payment',       'trans_name' => 'Payroll Payment',         'prefix' => '',     'pattern' => '{001}/{YYYY}'],
 
+            // ── Casual Workers ─────────────────────────────────────────────
+            ['trans_type' => 'casual_pay_run',    'trans_name' => 'Casual Pay Run',    'prefix' => 'CPR', 'pattern' => '{001}/{YYYY}'],
+
             // ── Dimensions & Other ─────────────────────────────────────────
             ['trans_type' => 'dimension',             'trans_name' => 'Dimension Entry',         'prefix' => '',     'pattern' => '{001}/{YYYY}'],
             ['trans_type' => 'asset_acquisition',     'trans_name' => 'Asset Acquisition',       'prefix' => 'FA',   'pattern' => '{001}/{YYYY}'],

@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers\Purchases;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\GlAccount;
 use App\Models\GldTransaction;
+use App\Models\GlSetting;
 use App\Models\PaymentVoucher;
 use App\Models\PaymentVoucherAllocation;
 use App\Models\Supplier;
@@ -84,7 +86,7 @@ class PaymentVoucherController extends Controller
                 DB::raw('scn.total - COALESCE(SUM(pva.this_allocation),0) as left_to_allocate')
             )
             ->groupBy('scn.id', 'scn.scn_no', 'scn.date', 'scn.total')
-            ->havingRaw('left_to_allocate > 0')
+            ->havingRaw('scn.total - COALESCE(SUM(pva.this_allocation),0) > 0')
             ->get();
         $rows = $rows->concat($creditNotes);
 
@@ -108,7 +110,7 @@ class PaymentVoucherController extends Controller
                 DB::raw('po.amount_total - COALESCE(SUM(pva.this_allocation),0) as left_to_allocate')
             )
             ->groupBy('po.id', 'po.type', 'po.po_no', 'po.order_date', 'po.amount_total')
-            ->havingRaw('left_to_allocate > 0')
+            ->havingRaw('po.amount_total - COALESCE(SUM(pva.this_allocation),0) > 0')
             ->get();
         $rows = $rows->concat($invoices);
 
@@ -131,14 +133,17 @@ class PaymentVoucherController extends Controller
             ->orderBy('date_paid')
             ->get()
             ->map(fn($v) => [
-                'transaction_type' => 'Payment Voucher',
-                'id'               => $v->id,
-                'supplier_ref'     => $v->pvn_no,
-                'date'             => $v->date_paid?->format('Y-m-d'),
-                'due_date'         => null,
-                'amount'           => $v->amount,
-                'other_allocations'=> 0,
-                'left_to_allocate' => $v->amount,
+                'transaction_type'       => 'Payment Voucher',
+                'id'                     => $v->id,
+                'supplier_ref'           => $v->pvn_no,
+                'date'                   => $v->date_paid?->format('Y-m-d'),
+                'due_date'               => null,
+                'amount'                 => $v->amount,
+                'withholding_tax_amount' => $v->withholding_tax_amount,
+                // gross = what must be allocated against open invoices/GRNs/credit notes when posting
+                'gross_amount'           => round((float) $v->amount + (float) $v->withholding_tax_amount, 2),
+                'other_allocations'      => 0,
+                'left_to_allocate'       => $v->amount,
             ]);
 
         return ApiResponse::success($vouchers, 'Approved vouchers loaded');
@@ -184,6 +189,7 @@ class PaymentVoucherController extends Controller
             'reference'              => 'nullable|string|max:60',
             'bank_cheque'            => 'nullable|string|max:60',
             'type'                   => 'nullable|string|max:20',
+            'withholding_tax_id'     => 'nullable|integer',
             'withholding_tax_amount' => 'nullable|numeric|min:0',
             'amount'                 => 'required|numeric|min:0',
             'cheque_no'              => 'nullable|string|max:60',
@@ -204,6 +210,7 @@ class PaymentVoucherController extends Controller
                 'reference'              => $request->reference,
                 'bank_cheque'            => $request->bank_cheque,
                 'type'                   => $request->type ?? 'bank',
+                'withholding_tax_id'     => $request->withholding_tax_id,
                 'withholding_tax_amount' => $request->withholding_tax_amount ?? 0,
                 'amount'                 => $request->amount,
                 'cheque_no'              => $request->cheque_no,
@@ -334,8 +341,13 @@ class PaymentVoucherController extends Controller
     /**
      * POST /purchases/payment-vouchers/{id}/post
      * Posts the voucher to GL: DR Payables / CR Bank
+     *
+     * Allocations are made here (not at entry time) — the approved voucher's
+     * amount is allocated against the supplier's open invoices/GRNs/credit
+     * notes as part of posting. If the voucher already has allocations
+     * (e.g. legacy vouchers entered the old way), those are used as-is.
      */
-    public function post(int $id): JsonResponse
+    public function post(Request $request, int $id): JsonResponse
     {
         $voucher = PaymentVoucher::with('allocations')->findOrFail($id);
 
@@ -343,14 +355,48 @@ class PaymentVoucherController extends Controller
             return ApiResponse::validationError(['status' => 'Voucher already posted']);
         }
 
+        $request->validate([
+            'allocations'                     => 'nullable|array',
+            'allocations.*.transaction_type'  => 'required_with:allocations|string',
+            'allocations.*.transaction_id'    => 'required_with:allocations|integer',
+            'allocations.*.this_allocation'   => 'required_with:allocations|numeric|min:0',
+        ]);
+
         DB::beginTransaction();
         try {
-            $transNo = 'PV-' . $voucher->id;
+            if ($voucher->allocations->isEmpty() && $request->filled('allocations')) {
+                $gross = round((float) $voucher->amount + (float) $voucher->withholding_tax_amount, 2);
+                $allocatedTotal = round(collect($request->allocations)->sum('this_allocation'), 2);
+
+                if ($allocatedTotal !== $gross) {
+                    DB::rollBack();
+                    return ApiResponse::validationError([
+                        'allocations' => "Allocated total ({$allocatedTotal}) must equal the voucher's gross amount ({$gross})",
+                    ]);
+                }
+
+                foreach ($request->allocations as $alloc) {
+                    PaymentVoucherAllocation::create([
+                        'payment_voucher_id' => $voucher->id,
+                        'transaction_type'   => $alloc['transaction_type'],
+                        'transaction_id'     => $alloc['transaction_id'],
+                        'this_allocation'    => $alloc['this_allocation'],
+                    ]);
+                }
+
+                $voucher->load('allocations');
+            }
+
+            // GL type code 22 = Supplier Payment (see GlInquiryController::typeLabels).
+            // trans_no must be the integer voucher id — gld_transactions.trans_no is
+            // unsignedInteger, it can't hold a "PV-123" style string.
+            $glType    = 22;
+            $apAccount = GlSetting::first()?->payable_account ?: '201010';
 
             // CR Bank/Cash account (payment going out)
             GldTransaction::create([
-                'trans_no'   => $transNo,
-                'type'       => 'payment_voucher',
+                'trans_no'   => $voucher->id,
+                'type'       => $glType,
                 'tran_date'  => $voucher->date_paid,
                 'account_code'=> $voucher->bank_account_code ?? '',
                 'reference'  => $voucher->pvn_no,
@@ -362,10 +408,10 @@ class PaymentVoucherController extends Controller
             // DR Accounts Payable (for each allocation)
             foreach ($voucher->allocations as $alloc) {
                 GldTransaction::create([
-                    'trans_no'    => $transNo,
-                    'type'        => 'payment_voucher',
+                    'trans_no'    => $voucher->id,
+                    'type'        => $glType,
                     'tran_date'   => $voucher->date_paid,
-                    'account_code'=> '', // AP account — ideally from GL settings
+                    'account_code'=> $apAccount,
                     'reference'   => $voucher->pvn_no,
                     'narration'   => 'Supplier payment allocation - ' . $alloc->transaction_type . ' #' . $alloc->transaction_id,
                     'amount'      => $alloc->this_allocation, // debit
@@ -373,8 +419,32 @@ class PaymentVoucherController extends Controller
                 ]);
             }
 
+            // CR Withholding Tax Payable — without this line the batch is short
+            // by the WHT amount (AP is debited gross, bank is only credited net).
+            if ((float) $voucher->withholding_tax_amount > 0) {
+                GldTransaction::create([
+                    'trans_no'    => $voucher->id,
+                    'type'        => $glType,
+                    'tran_date'   => $voucher->date_paid,
+                    'account_code'=> $this->resolveWhtAccount($voucher),
+                    'reference'   => $voucher->pvn_no,
+                    'narration'   => 'Withholding tax withheld - ' . $voucher->pvn_no,
+                    'amount'      => -$voucher->withholding_tax_amount, // credit
+                    'created_by'  => Auth::id(),
+                ]);
+            }
+
             $voucher->update(['status' => 'posted']);
             DB::commit();
+
+            try {
+                broadcast(new DashboardEvent('purchases', 'payment_posted', [
+                    'pvn_no' => $voucher->pvn_no,
+                    'amount' => (float) $voucher->amount,
+                ]));
+            } catch (\Throwable $e) {
+                Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
 
             // ── Anchor on-chain (fire-and-forget) ────────────────────────────
             try {
@@ -396,5 +466,58 @@ class PaymentVoucherController extends Controller
             DB::rollBack();
             return ApiResponse::validationError(['error' => $e->getMessage()]);
         }
+    }
+
+    // No dedicated WHT payable account is configured anywhere yet (WithholdingTax.gl_account
+    // is blank on every seeded row, GlSetting.tax_deduction_account is null) — fall back to
+    // the AP account so the line at least posts against something real, rather than a made-up
+    // code. Configure WithholdingTax.gl_account or GlSetting.tax_deduction_account to fix this properly.
+    private function resolveWhtAccount(PaymentVoucher $voucher): string
+    {
+        return $voucher->withholdingTax?->gl_account
+            ?: GlSetting::first()?->tax_deduction_account
+            ?: (GlSetting::first()?->payable_account ?: '201010');
+    }
+
+    /**
+     * POST /purchases/payment-vouchers/{id}/correct-wht-gl
+     * One-off repair for vouchers posted before the WHT GL line existed
+     * (see resolveWhtAccount / post()) — inserts the missing credit line so
+     * the batch balances. Safe to call repeatedly: no-ops once balanced.
+     */
+    public function correctWithholdingTaxGl(int $id): JsonResponse
+    {
+        $voucher = PaymentVoucher::findOrFail($id);
+
+        if ($voucher->status !== 'posted') {
+            return ApiResponse::validationError(['status' => 'Voucher is not posted']);
+        }
+        if ((float) $voucher->withholding_tax_amount <= 0) {
+            return ApiResponse::validationError(['amount' => 'Voucher has no withholding tax to correct']);
+        }
+
+        $glType = 22;
+
+        $alreadyCorrected = GldTransaction::where('type', $glType)
+            ->where('trans_no', $voucher->id)
+            ->where('narration', 'like', 'Withholding tax withheld%')
+            ->exists();
+
+        if ($alreadyCorrected) {
+            return ApiResponse::success(null, 'Voucher already has its withholding tax GL line');
+        }
+
+        GldTransaction::create([
+            'trans_no'    => $voucher->id,
+            'type'        => $glType,
+            'tran_date'   => $voucher->date_paid,
+            'account_code'=> $this->resolveWhtAccount($voucher),
+            'reference'   => $voucher->pvn_no,
+            'narration'   => 'Withholding tax withheld - ' . $voucher->pvn_no,
+            'amount'      => -$voucher->withholding_tax_amount, // credit
+            'created_by'  => Auth::id(),
+        ]);
+
+        return ApiResponse::success(null, 'Withholding tax GL line added — batch should now balance');
     }
 }

@@ -167,7 +167,11 @@ class SalesInvoiceController extends Controller
             $invoice->amount_total = round($subTotal + ($validated['shipping_charge'] ?? 0), 2);
             $invoice->save();
 
-            broadcast(new DashboardEvent('sales', 'invoice_created'));
+            try {
+                broadcast(new DashboardEvent('sales', 'invoice_created'));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
             return ApiResponse::created($invoice->load('items'), 'Sales invoice created');
         });
     }
@@ -386,27 +390,31 @@ public function showCredit(int $id): JsonResponse
                     $standardCost = (float) ($itemCost ?? 0);
                 }
 
-                // ── Stock movement: goods out — FIFO batch deduction ──────────
-                StockMovementService::deductFifo(
-                    $invoiceItem->stock_id,
-                    $locCode,
-                    $qty,
-                    [
-                        'trans_no'  => $invoice->id,
-                        'type'      => StockMovement::TYPE_DELIVERY,
-                        'tran_date' => $tranDate,
-                        'reference' => $invNo,
-                        'user_name' => $createdBy,
-                        'comments'  => $invoice->comments ?? '',
-                        'vehicle'   => $invoice->vehicle  ?? '',
-                        'shift'     => $invoice->shift    ?? '',
-                    ]
-                );
-
                 $item = DB::table('items')->where('stock_id', $invoiceItem->stock_id)
                     ->select('cogs_account', 'inventory_account', 'sales_account',
-                             'tax_type_id', 'dimension_id', 'dimension2_id')
+                             'tax_type_id', 'dimension_id', 'dimension2_id', 'mb_flag')
                     ->first();
+
+                // ── Stock movement: goods out — FIFO batch deduction ──────────
+                // Service items (mb_flag = 'S') aren't stock-controlled — skip
+                // the physical movement entirely.
+                if (! $item || $item->mb_flag !== 'S') {
+                    StockMovementService::deductFifo(
+                        $invoiceItem->stock_id,
+                        $locCode,
+                        $qty,
+                        [
+                            'trans_no'  => $invoice->id,
+                            'type'      => StockMovement::TYPE_DELIVERY,
+                            'tran_date' => $tranDate,
+                            'reference' => $invNo,
+                            'user_name' => $createdBy,
+                            'comments'  => $invoice->comments ?? '',
+                            'vehicle'   => $invoice->vehicle  ?? '',
+                            'shift'     => $invoice->shift    ?? '',
+                        ]
+                    );
+                }
 
                 $dimId  = ($item->dimension_id  ?? null) ?: $invoice->dimension_id;
                 $dim2Id = ($item->dimension2_id ?? null) ?: $invoice->dimension2_id;
@@ -561,7 +569,11 @@ public function showCredit(int $id): JsonResponse
             $alloc->applyUnallocatedPayments($freshInvoice, $tranDate, $createdBy);
             $alloc->applyUnallocatedCreditNotes($freshInvoice, $tranDate, $createdBy);
 
-            broadcast(new DashboardEvent('order_entry', 'placed', ['inv_no' => $invoice->inv_no, 'amount' => $invoice->amount_total]));
+            try {
+                broadcast(new DashboardEvent('order_entry', 'placed', ['inv_no' => $invoice->inv_no, 'amount' => $invoice->amount_total]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
             return $invoice->fresh();
         });
 

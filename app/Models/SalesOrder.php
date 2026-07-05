@@ -39,8 +39,9 @@ class SalesOrder extends Model
         $year = now()->year;
         $last = static::where('so_no', 'like', "SO%/{$year}")
             ->lockForUpdate()
-            ->orderByRaw('CAST(SUBSTRING(so_no, 3, LOCATE(\'/\', so_no) - 3) AS UNSIGNED) DESC')
-            ->value('so_no');
+            ->pluck('so_no')
+            ->sortByDesc(fn($n) => (int) substr($n, 2, strpos($n, '/') - 2))
+            ->first();
 
         $seq = 1;
         if ($last) {

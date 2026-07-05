@@ -104,17 +104,29 @@ class InventoryKpiController extends Controller
         }
 
         // Net available at location: GRN receipts (20) minus sales deliveries (26) and transfers (13)
+        // stock_id is a fixed-width CHAR column — SQL Server pads it with trailing
+        // spaces, so keys must be trimmed before matching against the request's ids.
         $qtys = DB::table('stock_movements')
             ->whereIn('stock_id', $request->stock_ids)
             ->where('loc_code', $locCode)
             ->whereIn('type', [20, 26, 13])
             ->groupBy('stock_id')
             ->selectRaw('stock_id, SUM(qty) as qty_available')
-            ->pluck('qty_available', 'stock_id');
+            ->pluck('qty_available', 'stock_id')
+            ->mapWithKeys(fn ($qty, $id) => [trim($id) => $qty]);
+
+        // Service items (mb_flag = 'S') aren't stock-controlled — they're never
+        // received via GRN, so stock_movements never has a row for them and they'd
+        // otherwise always show 0 available. Treat them as always available.
+        $serviceIds = DB::table('items')
+            ->whereIn('stock_id', $request->stock_ids)
+            ->where('mb_flag', 'S')
+            ->pluck('stock_id')
+            ->map(fn ($id) => trim($id));
 
         // Build result: every requested stock_id gets a qty (0 if not found)
         $result = collect($request->stock_ids)->mapWithKeys(fn ($id) => [
-            $id => (float) ($qtys[$id] ?? 0),
+            $id => $serviceIds->contains($id) ? PHP_FLOAT_MAX : (float) ($qtys[$id] ?? 0),
         ]);
 
         return ApiResponse::success($result, 'Availability checked');

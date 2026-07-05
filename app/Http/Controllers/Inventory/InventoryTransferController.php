@@ -88,8 +88,8 @@ class InventoryTransferController extends Controller
     {
         $transfer = InventoryTransfer::findOrFail($id);
 
-        if ($transfer->status !== 'draft') {
-            return ApiResponse::error('Only draft transfers can be edited', 422);
+        if (!in_array($transfer->status, ['draft', 'pending'])) {
+            return ApiResponse::error('Only draft or pending transfers can be edited', 422);
         }
 
         $validated = $request->validate([
@@ -109,7 +109,7 @@ class InventoryTransferController extends Controller
         ]);
 
         DB::transaction(function () use ($validated, $transfer) {
-            $transfer->fill($validated)->save();
+            $transfer->fill(array_merge($validated, ['status' => 'draft']))->save();
             if (isset($validated['items'])) {
                 $transfer->items()->delete();
                 foreach ($validated['items'] as $line) {

@@ -61,6 +61,31 @@ class SalesOrderController extends Controller
 
         $orders = $query->paginate(min((int) $request->get('per_page', 30), 200));
 
+        // Flag orders that are already fully dispatched — the UI uses this to
+        // stop them being selected for "Convert to Deliveries" again.
+        $orderIds = $orders->pluck('id');
+
+        $orderedTotals = DB::table('sales_order_items')
+            ->whereIn('so_id', $orderIds)
+            ->groupBy('so_id')
+            ->selectRaw('so_id, SUM(qty) as total_qty')
+            ->pluck('total_qty', 'so_id');
+
+        $deliveredTotals = DB::table('sales_delivery_items as di')
+            ->join('sales_deliveries as d', 'di.delivery_id', '=', 'd.id')
+            ->whereIn('d.so_id', $orderIds)
+            ->where('d.status', 'placed')
+            ->groupBy('d.so_id')
+            ->selectRaw('d.so_id, SUM(di.qty) as total_qty')
+            ->pluck('total_qty', 'd.so_id');
+
+        $orders->getCollection()->transform(function ($order) use ($orderedTotals, $deliveredTotals) {
+            $ordered   = (float) ($orderedTotals[$order->id] ?? 0);
+            $delivered = (float) ($deliveredTotals[$order->id] ?? 0);
+            $order->fully_delivered = $ordered > 0 && $delivered >= $ordered;
+            return $order;
+        });
+
         return ApiResponse::paginated($orders, 'Orders retrieved');
     }
 
@@ -148,7 +173,11 @@ class SalesOrderController extends Controller
             $order->amount_total = round($subTotal + ($validated['shipping_charge'] ?? 0), 2);
             $order->save();
 
-            broadcast(new DashboardEvent('sales_order', 'created', ['so_no' => $order->so_no, 'amount' => $order->amount_total]));
+            try {
+                broadcast(new DashboardEvent('sales_order', 'created', ['so_no' => $order->so_no, 'amount' => $order->amount_total]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
             return ApiResponse::created($order->load('items'), 'Sales order created');
         });
     }
@@ -206,7 +235,11 @@ class SalesOrderController extends Controller
         }
 
         $order->update(['status' => 'placed']);
-        broadcast(new DashboardEvent('sales_order', 'placed', ['so_no' => $order->so_no, 'amount' => $order->amount_total]));
+        try {
+            broadcast(new DashboardEvent('sales_order', 'placed', ['so_no' => $order->so_no, 'amount' => $order->amount_total]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
         return ApiResponse::success($order, 'Sales order placed');
     }
 
@@ -221,7 +254,11 @@ class SalesOrderController extends Controller
         }
 
         $order->update(['status' => 'cancelled']);
-        broadcast(new DashboardEvent('sales_order', 'cancelled', ['so_no' => $order->so_no]));
+        try {
+            broadcast(new DashboardEvent('sales_order', 'cancelled', ['so_no' => $order->so_no]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
         return ApiResponse::success($order, 'Sales order cancelled');
     }
 
@@ -631,29 +668,33 @@ class SalesOrderController extends Controller
                     'line_total'    => $lineTotal,
                 ]);
 
-                // ── Stock movement: goods out (negative qty) ──────────────────
-                StockMovement::create([
-                    'trans_no'      => $delivery->id,
-                    'stock_id'      => $orderItem->stock_id,
-                    'type'          => StockMovement::TYPE_DELIVERY,
-                    'loc_code'      => $locCode,
-                    'tran_date'     => $data['delivery_date'],
-                    'date_moved'    => $data['delivery_date'],
-                    'qty'           => -$qty,
-                    'price'         => $orderItem->price,
-                    'standard_cost' => $standardCost,
-                    'reference'     => $dnNo,
-                    'comments'      => $data['comments'] ?? null,
-                    'user_name'     => $createdBy,
-                    'vehicle'       => $data['vehicle'] ?? $order->vehicle ?? '',
-                    'shift'         => $data['shift'] ?? $order->shift ?? '',
-                    'approved'      => 1,
-                ]);
-
-                // ── Fetch item master data (accounts, tax) ───────────────────
+                // ── Fetch item master data (accounts, tax, type) ──────────────
                 $item = DB::table('items')->where('stock_id', $orderItem->stock_id)
-                    ->select('cogs_account', 'inventory_account', 'dimension_id', 'dimension2_id')
+                    ->select('cogs_account', 'inventory_account', 'dimension_id', 'dimension2_id', 'mb_flag')
                     ->first();
+
+                // ── Stock movement: goods out (negative qty) ───────────────────
+                // Service items (mb_flag = 'S') aren't stock-controlled — they
+                // have no location, so skip the physical movement entirely.
+                if (! $item || $item->mb_flag !== 'S') {
+                    StockMovement::create([
+                        'trans_no'      => $delivery->id,
+                        'stock_id'      => $orderItem->stock_id,
+                        'type'          => StockMovement::TYPE_DELIVERY,
+                        'loc_code'      => $locCode,
+                        'tran_date'     => $data['delivery_date'],
+                        'date_moved'    => $data['delivery_date'],
+                        'qty'           => -$qty,
+                        'price'         => $orderItem->price,
+                        'standard_cost' => $standardCost,
+                        'reference'     => $dnNo,
+                        'comments'      => $data['comments'] ?? null,
+                        'user_name'     => $createdBy,
+                        'vehicle'       => $data['vehicle'] ?? $order->vehicle ?? '',
+                        'shift'         => $data['shift'] ?? $order->shift ?? '',
+                        'approved'      => 1,
+                    ]);
+                }
 
                 $dimId  = ($item->dimension_id  ?? null) ?: $order->dimension_id;
                 $dim2Id = ($item->dimension2_id ?? null) ?: $order->dimension2_id;
@@ -699,7 +740,11 @@ class SalesOrderController extends Controller
                 'amount_total' => round($subTotal + $shippingCharge, 2),
             ]);
 
-            broadcast(new DashboardEvent('dispatch', 'created', ['dn_no' => $delivery->dn_no, 'so_no' => $order->so_no, 'amount' => $delivery->amount_total]));
+            try {
+                broadcast(new DashboardEvent('dispatch', 'created', ['dn_no' => $delivery->dn_no, 'so_no' => $order->so_no, 'amount' => $delivery->amount_total]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
             return ApiResponse::created($delivery->fresh()->load('items'), 'Dispatch created');
         });
     }

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Purchases;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\GldTransaction;
@@ -138,12 +139,12 @@ class SupplierCreditNoteController extends Controller
         $scn = SupplierCreditNote::with('supplier:supplierId,supplierName')->findOrFail($id);
 
         $glEntries = DB::table('gld_transactions as g')
-            ->leftJoin('0_chart_master as cm', 'cm.account_code', '=', 'g.account_code')
+            ->leftJoin('gl_accounts as cm', 'cm.code', '=', 'g.account_code')
             ->where('g.trans_no', $scn->id)
             ->where('g.reference', $scn->scn_no)
             ->select(
                 'g.account_code',
-                DB::raw('COALESCE(cm.account_name, g.account_code) AS account_name'),
+                DB::raw('COALESCE(cm.name, g.account_code) AS account_name'),
                 'g.narration as memo',
                 'g.tran_date',
                 'g.reference',
@@ -265,6 +266,15 @@ class SupplierCreditNoteController extends Controller
 
             // Post GL entries
             $this->postGlEntries($scn, $items, $glItems, $user);
+
+            try {
+                broadcast(new DashboardEvent('purchases', 'credit_note_posted', [
+                    'scn_no' => $scn->scn_no,
+                    'amount' => (float) $scn->total,
+                ]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
 
             $scn->load(['supplier:supplierId,supplierName', 'items', 'glItems']);
             return ApiResponse::created($scn, 'Supplier credit note posted successfully');

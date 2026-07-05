@@ -27,9 +27,9 @@ class PurchasesAnalyticsController extends Controller
         $rawRows = DB::table('purchase_orders')
             ->whereBetween('order_date', [$histFrom, $histTo])
             ->whereNotIn('status', ['draft', 'rejected'])
-            ->selectRaw('DATE(order_date) AS date, SUM(amount_total) AS amount,
+            ->selectRaw('CAST(order_date AS DATE) AS date, SUM(amount_total) AS amount,
                          COUNT(*) AS po_count, COUNT(DISTINCT supplier_id) AS supplier_count')
-            ->groupBy(DB::raw('DATE(order_date)'))
+            ->groupBy(DB::raw('CAST(order_date AS DATE)'))
             ->orderBy('date')
             ->get()
             ->keyBy('date');

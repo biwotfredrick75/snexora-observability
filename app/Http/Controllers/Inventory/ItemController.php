@@ -62,7 +62,7 @@ class ItemController extends Controller
 
         $stockQuery = DB::table('stock_movements')
             ->whereIn('stock_id', $stockIds)
-            ->selectRaw('stock_id, SUM(qty) as qty_in_stock');
+            ->selectRaw('TRIM(stock_id) as stock_id, SUM(qty) as qty_in_stock');
 
         if ($locCode) {
             $stockQuery->where('loc_code', $locCode);

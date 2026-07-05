@@ -71,10 +71,10 @@ class GlInquiryController extends Controller
         ]);
     }
 
-    /** GET /api/banking/gl-inquiry/type-labels */
+    /** GET /api/banking/gl-inquiry/type-labels — only types that have GL data */
     public function typeLabels(): JsonResponse
     {
-        $labels = [
+        $allLabels = [
             0  => 'Journal Entry',
             1  => 'Bank Deposit',
             2  => 'Bank Payment',
@@ -94,6 +94,13 @@ class GlInquiryController extends Controller
             41 => 'Work Order Issue',
             50 => 'Payroll',
         ];
+
+        $usedTypes = DB::table('gld_transactions')->select('type')->distinct()->pluck('type');
+
+        $labels = collect($allLabels)
+            ->filter(fn($name, $code) => $usedTypes->contains($code))
+            ->all();
+
         return ApiResponse::success($labels);
     }
 

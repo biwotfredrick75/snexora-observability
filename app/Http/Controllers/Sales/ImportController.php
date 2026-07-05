@@ -101,7 +101,7 @@ class ImportController extends Controller
             // Fetch available qty (sum of movements) for each distinct item
             $available = DB::table('stock_movements')
                 ->whereIn('stock_id', array_keys($required))
-                ->selectRaw('stock_id, SUM(qty) as available_qty')
+                ->selectRaw('TRIM(stock_id) as stock_id, SUM(qty) as available_qty')
                 ->groupBy('stock_id')
                 ->pluck('available_qty', 'stock_id');
 

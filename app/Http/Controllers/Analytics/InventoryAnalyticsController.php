@@ -29,8 +29,8 @@ class InventoryAnalyticsController extends Controller
             ->whereBetween('tran_date', [$histFrom, $histTo])
             ->whereIn('type', [10, 26])
             ->where('qty', '<', 0)
-            ->selectRaw('DATE(tran_date) AS date, SUM(ABS(qty) * price) AS value, SUM(ABS(qty)) AS total_qty')
-            ->groupBy(DB::raw('DATE(tran_date)'))
+            ->selectRaw('CAST(tran_date AS DATE) AS date, SUM(ABS(qty) * price) AS value, SUM(ABS(qty)) AS total_qty')
+            ->groupBy(DB::raw('CAST(tran_date AS DATE)'))
             ->orderBy('date')
             ->get()
             ->keyBy('date');

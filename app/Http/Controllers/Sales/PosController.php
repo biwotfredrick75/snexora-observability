@@ -129,7 +129,7 @@ class PosController extends Controller
             $qtyQuery->where('loc_code', $locCode);
         }
         $stockQtys = $qtyQuery->groupBy('stock_id')
-            ->selectRaw('stock_id, SUM(qty) as qty_on_hand')
+            ->selectRaw('TRIM(stock_id) as stock_id, SUM(qty) as qty_on_hand')
             ->pluck('qty_on_hand', 'stock_id');
 
         // Bulk-fetch prices: keyed by stock_id, prefer matching sales_type
@@ -205,7 +205,7 @@ class PosController extends Controller
             $qtyQuery->where('loc_code', $locCode);
         }
         $stockQtys = $qtyQuery->groupBy('stock_id')
-            ->selectRaw('stock_id, SUM(qty) as qty_on_hand')
+            ->selectRaw('TRIM(stock_id) as stock_id, SUM(qty) as qty_on_hand')
             ->pluck('qty_on_hand', 'stock_id');
 
         $prices = ItemSalesPrice::whereIn('stock_id', $stockIds)
@@ -340,7 +340,7 @@ class PosController extends Controller
                 // Current balances: SUM of all movement types that affect on-hand qty
                 $balanceQuery = DB::table('stock_movements')
                     ->whereIn('stock_id', array_keys($requested))
-                    ->selectRaw('stock_id, SUM(qty) as balance')
+                    ->selectRaw('TRIM(stock_id) as stock_id, SUM(qty) as balance')
                     ->groupBy('stock_id');
 
                 if ($locCode) {
@@ -609,7 +609,11 @@ class PosController extends Controller
                 ? "Sale completed — Sales Order {$soNo} created"
                 : 'Sale completed (walk-in — no sales order created)';
 
-            broadcast(new DashboardEvent('direct_sale', 'created', ['ref' => $sale->receipt_no, 'amount' => $sale->total_amount]));
+            try {
+                broadcast(new DashboardEvent('direct_sale', 'created', ['ref' => $sale->receipt_no, 'amount' => $sale->total_amount]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
             return ApiResponse::created(
                 array_merge($sale->load('items')->toArray(), ['so_no' => $so ? $soNo : null]),
                 $msg
@@ -637,7 +641,11 @@ class PosController extends Controller
             'void_reason' => $data['void_reason'],
         ]);
 
-        broadcast(new DashboardEvent('direct_sale', 'voided', ['ref' => $sale->receipt_no]));
+        try {
+            broadcast(new DashboardEvent('direct_sale', 'voided', ['ref' => $sale->receipt_no]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
         return ApiResponse::updated($sale, 'Sale voided');
     }
 }

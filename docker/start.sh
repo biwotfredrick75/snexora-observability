@@ -31,4 +31,12 @@ if [ "${SEED_SAMPLE_DATA:-false}" = "true" ]; then
     echo "[start.sh] Sample data seeding complete. Set SEED_SAMPLE_DATA=false to skip next time."
 fi
 
+# The commands above run as root and write new files under storage/ and
+# bootstrap/cache/ (migrations, seeders, config/route/event cache). php-fpm's
+# workers run as www-data, so any new file/dir left root-owned here causes a
+# "Permission denied" the first time a request needs to write a sibling cache
+# entry in the same directory (e.g. Spatie's permission cache). Re-sync
+# ownership right before handing off so php-fpm can always write its caches.
+chown -R www-data:www-data storage bootstrap/cache
+
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf

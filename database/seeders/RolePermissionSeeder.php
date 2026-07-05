@@ -100,6 +100,12 @@ class RolePermissionSeeder extends Seeder
             // Role Assignment
             'assign-roles',
 
+            // Casual Workers Module
+            'view-casual-workers',
+            'manage-casual-workers',
+            'approve-casual-workers',
+            'reports-casual-workers',
+
             // Audit Module
             'view-audit',
         ];
@@ -142,6 +148,8 @@ class RolePermissionSeeder extends Seeder
                 'view-manufacturing',
                 'manage-manufacturing',
                 'reports-manufacturing',
+                'view-casual-workers',
+                'manage-casual-workers',
             ],
 
             'user' => [

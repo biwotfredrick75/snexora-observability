@@ -188,7 +188,11 @@ class CreditNoteController extends Controller
             // Auto-allocate against the linked invoice (inside this transaction)
             app(AllocationService::class)->allocateCreditNote($cn->fresh());
 
-            broadcast(new DashboardEvent('return_items', 'placed', ['cn_no' => $cn->cn_no, 'amount' => $cn->amount_total, 'cn_type' => $cn->cn_type]));
+            try {
+                broadcast(new DashboardEvent('return_items', 'placed', ['cn_no' => $cn->cn_no, 'amount' => $cn->amount_total, 'cn_type' => $cn->cn_type]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
             return $cn->fresh();
         });
 

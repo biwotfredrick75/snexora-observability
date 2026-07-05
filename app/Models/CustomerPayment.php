@@ -43,8 +43,9 @@ class CustomerPayment extends Model
 
         $last = static::where('payment_no', 'like', "RCP/%/{$year}")
             ->lockForUpdate()
-            ->orderByRaw('CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(payment_no, \'/\', 2), \'/\', -1) AS UNSIGNED) DESC')
-            ->value('payment_no');
+            ->pluck('payment_no')
+            ->sortByDesc(fn($n) => (int) (explode('/', $n)[1] ?? 0))
+            ->first();
 
         $seq = 1;
         if ($last) {

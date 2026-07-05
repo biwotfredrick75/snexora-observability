@@ -292,7 +292,10 @@ class CustomerPaymentController extends Controller
             $glSetting      = DB::table('gl_settings')->first();
             $companyPref    = DB::table('company_preferences')->first();
             $debtorsAccount = ($companyPref->debtors_gl_code ?? null) ?: ($glSetting->receivable_account ?? null) ?: 'DEBTORS';
-            $bankAccount    = $payment->bank_account_code ?: ($glSetting->receivable_account ?? 'BANK');
+            // No bank account picked — there's no dedicated "default bank" GL
+            // setting, so fall back to a placeholder rather than reusing the
+            // receivables account (which is unrelated to cash/bank).
+            $bankAccount    = $payment->bank_account_code ?: 'BANK';
             $bankChargesAcc = $glSetting->bank_charges_account ?? 'BANK_CHARGES';
             $discountAcc    = $glSetting->prompt_payment_discount_account ?? ($glSetting->sales_discount_account ?? 'PPD');
 
@@ -319,7 +322,11 @@ class CustomerPaymentController extends Controller
                     "Bank Charge Deduction — {$paymentNo}", $paymentNo, $createdBy);
             }
 
-            broadcast(new DashboardEvent('payments', 'payment_posted'));
+            try {
+                broadcast(new DashboardEvent('payments', 'payment_posted'));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
 
             // ── Anchor on-chain (fire-and-forget — never blocks the response) ──
             try {

@@ -28,8 +28,8 @@ class ManufacturingAnalyticsController extends Controller
         $rawRows = DB::table('work_orders')
             ->where('status', 'completed')
             ->whereBetween('completed_date', [$histFrom, $histTo])
-            ->selectRaw('DATE(completed_date) AS date, SUM(actual_qty_produced) AS qty_produced, COUNT(*) AS wo_count')
-            ->groupBy(DB::raw('DATE(completed_date)'))
+            ->selectRaw('CAST(completed_date AS DATE) AS date, SUM(actual_qty_produced) AS qty_produced, COUNT(*) AS wo_count')
+            ->groupBy(DB::raw('CAST(completed_date AS DATE)'))
             ->orderBy('date')
             ->get()
             ->keyBy('date');

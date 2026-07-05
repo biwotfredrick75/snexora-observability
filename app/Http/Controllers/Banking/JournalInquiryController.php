@@ -11,7 +11,32 @@ use Illuminate\Support\Facades\DB;
 class JournalInquiryController extends Controller
 {
     // Strips per-farmer suffix (-F<id>) so batch entries collapse into one row.
-    private const BATCH_EXPR = "REGEXP_REPLACE(gt.reference, '-F[0-9]+$', '')";
+    // SQL Server: use PATINDEX + LEFT instead of REGEXP_REPLACE (MySQL-only).
+    private const BATCH_EXPR = "CASE WHEN PATINDEX('%-F[0-9]%', gt.reference) > 0 THEN LEFT(gt.reference, PATINDEX('%-F[0-9]%', gt.reference) - 1) ELSE gt.reference END";
+
+    // gld_transactions.type uses FrontAccounting-style numeric codes — these
+    // don't correspond to transaction_references.id (that's an unrelated
+    // auto-increment key), so names are resolved from this fixed map instead.
+    private const TYPE_LABELS = [
+        0  => 'Journal Entry',
+        1  => 'Bank Deposit',
+        2  => 'Bank Payment',
+        4  => 'Funds Transfer',
+        10 => 'Sales Invoice',
+        11 => 'Credit Note',
+        12 => 'Customer Payment',
+        13 => 'Customer Deposit',
+        20 => 'Supplier Invoice',
+        21 => 'Supplier Credit',
+        22 => 'Supplier Payment',
+        25 => 'Purchase Order',
+        26 => 'Delivery Note',
+        32 => 'Location Transfer',
+        35 => 'Inventory Adjustment',
+        40 => 'Work Order',
+        41 => 'Work Order Issue',
+        50 => 'Payroll',
+    ];
 
     // ── Journal list (grouped by type + batch reference) ──────────────────────
     public function index(Request $request): JsonResponse
@@ -41,10 +66,8 @@ class JournalInquiryController extends Controller
             ->orderByRaw("{$bx} DESC")
             ->paginate($request->per_page ?? 25);
 
-        $typeNames = DB::table('transaction_references')->pluck('trans_name', 'id');
-
-        $journals->getCollection()->transform(function ($j) use ($typeNames) {
-            $j->type_name = $typeNames[$j->type] ?? "Type {$j->type}";
+        $journals->getCollection()->transform(function ($j) {
+            $j->type_name = self::TYPE_LABELS[$j->type] ?? "Type {$j->type}";
             return $j;
         });
 
@@ -59,17 +82,17 @@ class JournalInquiryController extends Controller
             'batch_ref' => 'required|string',
         ]);
 
-        $bx = "REGEXP_REPLACE(gt.reference, '-F[0-9]+$', '')";
+        $bx = "CASE WHEN PATINDEX('%-F[0-9]%', gt.reference) > 0 THEN LEFT(gt.reference, PATINDEX('%-F[0-9]%', gt.reference) - 1) ELSE gt.reference END";
 
         $lines = DB::table('gld_transactions as gt')
-            ->leftJoin('0_chart_master as cm', 'cm.account_code', '=', 'gt.account_code')
+            ->leftJoin('gl_accounts as cm', 'cm.code', '=', 'gt.account_code')
             ->where('gt.type', $request->type)
             ->whereRaw("{$bx} = ?", [$request->batch_ref])
             ->select(
                 'gt.id',
                 'gt.trans_no',
                 'gt.account_code',
-                DB::raw('COALESCE(cm.account_name, gt.account_code) AS account_name'),
+                DB::raw('COALESCE(cm.name, gt.account_code) AS account_name'),
                 'gt.narration',
                 'gt.amount',
                 'gt.tran_date',
@@ -87,13 +110,13 @@ class JournalInquiryController extends Controller
     public function lines(int $type, int $transNo): JsonResponse
     {
         $lines = DB::table('gld_transactions as gt')
-            ->leftJoin('0_chart_master as cm', 'cm.account_code', '=', 'gt.account_code')
+            ->leftJoin('gl_accounts as cm', 'cm.code', '=', 'gt.account_code')
             ->where('gt.type', $type)
             ->where('gt.trans_no', $transNo)
             ->select(
                 'gt.id',
                 'gt.account_code',
-                DB::raw('COALESCE(cm.account_name, gt.account_code) AS account_name'),
+                DB::raw('COALESCE(cm.name, gt.account_code) AS account_name'),
                 'gt.narration',
                 'gt.amount',
                 'gt.tran_date',
@@ -113,12 +136,13 @@ class JournalInquiryController extends Controller
         $usedTypes = DB::table('gld_transactions')
             ->select('type')
             ->distinct()
-            ->pluck('type');
+            ->pluck('type')
+            ->sort();
 
-        $names = DB::table('transaction_references')
-            ->whereIn('id', $usedTypes)
-            ->orderBy('id')
-            ->get(['id', 'trans_name']);
+        $names = $usedTypes->map(fn($code) => [
+            'id'         => $code,
+            'trans_name' => self::TYPE_LABELS[$code] ?? "Type {$code}",
+        ])->values();
 
         return ApiResponse::success($names, 'Transaction types');
     }

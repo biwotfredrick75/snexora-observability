@@ -62,10 +62,10 @@ class InventoryReportController extends Controller
             ->get();
 
         $stockQtys = DB::table('stock_movements')
-            ->selectRaw('stock_id, loc_code, SUM(qty) as qty')
+            ->selectRaw('TRIM(stock_id) as stock_id, TRIM(loc_code) as loc_code, SUM(qty) as qty')
             ->groupBy('stock_id', 'loc_code')
             ->get()
-            ->keyBy(fn($r) => $r->stock_id . '|' . $r->loc_code);
+            ->keyBy(fn($r) => trim($r->stock_id) . '|' . trim($r->loc_code));
 
         $rows = $levels->map(function ($r) use ($stockQtys) {
             $key       = $r->stock_id . '|' . $r->loc_code;
@@ -144,7 +144,7 @@ class InventoryReportController extends Controller
         $activeKeys = DB::table('stock_movements')
             ->where('qty', '<', 0)
             ->where('tran_date', '>=', $cutoff)
-            ->selectRaw('CONCAT(stock_id, "|", loc_code) as k, MAX(tran_date) as last_out')
+            ->selectRaw("TRIM(stock_id) + '|' + TRIM(loc_code) as k, MAX(tran_date) as last_out")
             ->groupByRaw('stock_id, loc_code')
             ->get()
             ->keyBy('k');
@@ -174,7 +174,7 @@ class InventoryReportController extends Controller
             ->selectRaw('stock_id, loc_code, MAX(tran_date) as last_out')
             ->groupBy('stock_id', 'loc_code')
             ->get()
-            ->keyBy(fn($r) => $r->stock_id . '|' . $r->loc_code);
+            ->keyBy(fn($r) => trim($r->stock_id) . '|' . trim($r->loc_code));
 
         $rows = $allStock->filter(function ($s) use ($activeKeys) {
             $k = $s->stock_id . '|' . $s->loc_code;

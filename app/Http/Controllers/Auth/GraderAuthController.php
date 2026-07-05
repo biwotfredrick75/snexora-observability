@@ -68,7 +68,7 @@ class GraderAuthController extends Controller
             'grader' => [
                 'id'            => $user->id,
                 'loc_code'      => $user->user_id,
-                'location_id'   => $location?->id,
+                'location_id'   => $location ? (int) $location->id : null,
                 'location_code' => $location?->code,
                 'name'          => $user->real_name,
                 'roles'         => $user->getRoleNames(),

@@ -13,7 +13,8 @@ class VehicleController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Vehicle::with(['drivers:id,name,vehicle_id'])->orderBy('plate_no');
+        // Eager-loads `route` (Transport module's Fleet Registry needs plate/type/route/driver/status)
+        $query = Vehicle::with(['drivers:id,name,vehicle_id', 'route:id,route_code,route_name'])->orderBy('plate_no');
 
         if (! $request->boolean('inactive')) {
             $query->where('inactive', false);
@@ -32,11 +33,12 @@ class VehicleController extends Controller
             'type'     => 'required|in:truck,van,pickup,car,motorcycle,other',
             'color'    => 'nullable|string|max:40',
             'capacity' => 'nullable|integer|min:0',
+            'route_id' => 'nullable|integer|exists:transport_routes,id',
         ]);
 
         $vehicle = Vehicle::create($validated);
 
-        return ApiResponse::created($vehicle->load('drivers'), 'Vehicle created');
+        return ApiResponse::created($vehicle->load(['drivers', 'route']), 'Vehicle created');
     }
 
     public function update(Request $request, int $id): JsonResponse
@@ -52,11 +54,12 @@ class VehicleController extends Controller
             'color'    => 'nullable|string|max:40',
             'capacity' => 'nullable|integer|min:0',
             'inactive' => 'sometimes|boolean',
+            'route_id' => 'nullable|integer|exists:transport_routes,id',
         ]);
 
         $vehicle->fill($validated)->save();
 
-        return ApiResponse::updated($vehicle->fresh()->load('drivers'), 'Vehicle updated');
+        return ApiResponse::updated($vehicle->fresh()->load(['drivers', 'route']), 'Vehicle updated');
     }
 
     public function destroy(int $id): JsonResponse

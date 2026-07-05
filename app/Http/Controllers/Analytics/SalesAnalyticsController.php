@@ -27,8 +27,8 @@ class SalesAnalyticsController extends Controller
         $rawRows = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$histFrom, $histTo])
             ->whereIn('status', ['posted', 'paid', 'partial'])
-            ->selectRaw('DATE(invoice_date) AS date, SUM(amount_total) AS amount, COUNT(*) AS inv_count')
-            ->groupBy(DB::raw('DATE(invoice_date)'))
+            ->selectRaw('CAST(invoice_date AS DATE) AS date, SUM(amount_total) AS amount, COUNT(*) AS inv_count')
+            ->groupBy(DB::raw('CAST(invoice_date AS DATE)'))
             ->orderBy('date')
             ->get()
             ->keyBy('date');
@@ -198,8 +198,8 @@ class SalesAnalyticsController extends Controller
         $dailyRows = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$from, $to])
             ->whereIn('status', ['posted', 'paid', 'partial'])
-            ->selectRaw('DATE(invoice_date) AS date, SUM(amount_total) AS amount')
-            ->groupBy(DB::raw('DATE(invoice_date)'))
+            ->selectRaw('CAST(invoice_date AS DATE) AS date, SUM(amount_total) AS amount')
+            ->groupBy(DB::raw('CAST(invoice_date AS DATE)'))
             ->orderBy('date')
             ->get()
             ->toArray();

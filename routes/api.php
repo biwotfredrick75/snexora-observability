@@ -1,5 +1,6 @@
 <?php
 use App\Http\Controllers\Internal\BulkApprovalCallbackController;
+use App\Http\Controllers\Payroll\PayrollController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Analytics\MilkForecastController;
 use App\Http\Controllers\Analytics\SalesAnalyticsController;
@@ -7,7 +8,9 @@ use App\Http\Controllers\Analytics\InventoryAnalyticsController;
 use App\Http\Controllers\Analytics\ManufacturingAnalyticsController;
 use App\Http\Controllers\Analytics\PurchasesAnalyticsController;
 use App\Http\Controllers\Analytics\AiChatController;
+use App\Http\Controllers\Analytics\FinancialAnalyticsController;
 use App\Http\Controllers\Audit\AuditController;
+use App\Http\Controllers\Esp\EspController;
 use App\Http\Controllers\Setup\EtimsSetupController;
 use App\Http\Controllers\Etims\EtimsController;
 use App\Http\Controllers\Etims\EtimsSettingsController;
@@ -17,6 +20,7 @@ use App\Http\Controllers\Auth\RolePermissionController;
 use App\Http\Controllers\Auth\PassportAuthController;
 use App\Http\Controllers\Auth\ProfileController;
 use App\Http\Controllers\Setup\CompanyController;
+use App\Http\Controllers\Setup\DataResetController;
 use App\Http\Controllers\Setup\UserController;
 use App\Http\Controllers\Setup\RoleController;
 use App\Http\Controllers\Setup\DisplayController;
@@ -47,6 +51,13 @@ use App\Http\Controllers\Setup\SystemDiagnosticsController;
 use App\Http\Controllers\Setup\DimensionController;
 use App\Http\Controllers\Setup\VehicleController;
 use App\Http\Controllers\Setup\DriverController;
+use App\Http\Controllers\Setup\AppModuleController;
+// ── Transport ──
+use App\Http\Controllers\Transport\TransportRouteController;
+use App\Http\Controllers\Transport\LoadingOrderController;
+use App\Http\Controllers\Transport\FuelEntryController;
+use App\Http\Controllers\Transport\MaintenanceRecordController;
+use App\Http\Controllers\Transport\TransportDashboardController;
 use App\Http\Controllers\Inventory\ItemCategoryController;
 use App\Http\Controllers\Inventory\ItemController;
 use App\Http\Controllers\Inventory\ItemSalesPriceController;
@@ -215,6 +226,11 @@ Route::middleware('auth:api')->group(function () {
         Route::get('company',  [CompanyController::class, 'show']);
         Route::post('company', [CompanyController::class, 'update']);
 
+        Route::middleware('role:super_admin')->group(function () {
+            Route::get('data-reset/counts', [DataResetController::class, 'counts']);
+            Route::post('data-reset/clear', [DataResetController::class, 'clear']);
+        });
+
         Route::get('users',         [UserController::class, 'index']);
         Route::post('users',        [UserController::class, 'store']);
         Route::put('users/{id}',    [UserController::class, 'update']);
@@ -350,6 +366,9 @@ Route::middleware('auth:api')->group(function () {
         Route::post('drivers',         [DriverController::class, 'store']);
         Route::put('drivers/{id}',     [DriverController::class, 'update']);
         Route::delete('drivers/{id}',  [DriverController::class, 'destroy']);
+
+        Route::get('app-modules',              [AppModuleController::class, 'index']);
+        Route::put('app-modules/{moduleId}',   [AppModuleController::class, 'update']);
     });
 
     // ── Banking / GL ───────────────────────────────────────────────────────────
@@ -431,13 +450,40 @@ Route::middleware('auth:api')->group(function () {
         Route::get('bank-inquiry/form-data', [\App\Http\Controllers\Banking\BankTransactionInquiryController::class, 'formData']);
         Route::get('bank-inquiry',           [\App\Http\Controllers\Banking\BankTransactionInquiryController::class, 'index']);
 
-        // ── Petty Cash ────────────────────────────────────────────────────────
+        // ── Petty Cash (legacy requests) ──────────────────────────────────────
         Route::get('petty-cash/form-data',       [\App\Http\Controllers\Banking\PettyCashController::class, 'formData']);
         Route::get('petty-cash',                 [\App\Http\Controllers\Banking\PettyCashController::class, 'index']);
         Route::post('petty-cash',                [\App\Http\Controllers\Banking\PettyCashController::class, 'store']);
         Route::post('petty-cash/{id}/approve',   [\App\Http\Controllers\Banking\PettyCashController::class, 'approve']);
         Route::post('petty-cash/{id}/disburse',  [\App\Http\Controllers\Banking\PettyCashController::class, 'disburse']);
         Route::post('petty-cash/{id}/retire',    [\App\Http\Controllers\Banking\PettyCashController::class, 'retire']);
+
+        // ── Petty Cash Module (imprest fund system) ───────────────────────────
+        Route::get('petty-cash/dashboard',       [\App\Http\Controllers\Banking\PettyCashFundController::class, 'dashboard']);
+        Route::get('petty-cash/fund-form-data',  [\App\Http\Controllers\Banking\PettyCashFundController::class, 'formData']);
+        Route::get('petty-cash/funds',           [\App\Http\Controllers\Banking\PettyCashFundController::class, 'index']);
+        Route::post('petty-cash/funds',          [\App\Http\Controllers\Banking\PettyCashFundController::class, 'store']);
+        Route::get('petty-cash/funds/{id}',      [\App\Http\Controllers\Banking\PettyCashFundController::class, 'show']);
+        Route::put('petty-cash/funds/{id}',      [\App\Http\Controllers\Banking\PettyCashFundController::class, 'update']);
+
+        Route::get('petty-cash/vouchers',                [\App\Http\Controllers\Banking\PettyCashVoucherController::class, 'index']);
+        Route::post('petty-cash/vouchers',               [\App\Http\Controllers\Banking\PettyCashVoucherController::class, 'store']);
+        Route::get('petty-cash/vouchers/{id}',           [\App\Http\Controllers\Banking\PettyCashVoucherController::class, 'show']);
+        Route::post('petty-cash/vouchers/{id}/approve',  [\App\Http\Controllers\Banking\PettyCashVoucherController::class, 'approve']);
+        Route::post('petty-cash/vouchers/{id}/reject',   [\App\Http\Controllers\Banking\PettyCashVoucherController::class, 'reject']);
+        Route::post('petty-cash/vouchers/{id}/void',     [\App\Http\Controllers\Banking\PettyCashVoucherController::class, 'void']);
+
+        Route::get('petty-cash/reconciliations',                   [\App\Http\Controllers\Banking\PettyCashReconciliationController::class, 'index']);
+        Route::post('petty-cash/reconciliations',                  [\App\Http\Controllers\Banking\PettyCashReconciliationController::class, 'store']);
+        Route::get('petty-cash/reconciliations/{id}',              [\App\Http\Controllers\Banking\PettyCashReconciliationController::class, 'show']);
+        Route::post('petty-cash/reconciliations/{id}/finalize',    [\App\Http\Controllers\Banking\PettyCashReconciliationController::class, 'finalize']);
+        Route::post('petty-cash/reconciliations/{id}/countersign', [\App\Http\Controllers\Banking\PettyCashReconciliationController::class, 'countersign']);
+
+        Route::get('petty-cash/replenishments',               [\App\Http\Controllers\Banking\PettyCashReplenishmentController::class, 'index']);
+        Route::post('petty-cash/replenishments',              [\App\Http\Controllers\Banking\PettyCashReplenishmentController::class, 'store']);
+        Route::get('petty-cash/replenishments/{id}',          [\App\Http\Controllers\Banking\PettyCashReplenishmentController::class, 'show']);
+        Route::post('petty-cash/replenishments/{id}/approve', [\App\Http\Controllers\Banking\PettyCashReplenishmentController::class, 'approve']);
+        Route::post('petty-cash/replenishments/{id}/confirm', [\App\Http\Controllers\Banking\PettyCashReplenishmentController::class, 'confirm']);
 
         // ── Banking & GL Reports ───────────────────────────────────────────────
         Route::prefix('reports')->group(function () {
@@ -740,6 +786,22 @@ Route::middleware('auth:api')->group(function () {
         Route::post('payment-vouchers/{id}/finance-approve',  [PaymentVoucherController::class, 'financeApprove']);
         Route::post('payment-vouchers/{id}/ceo-approve',      [PaymentVoucherController::class, 'ceoApprove']);
         Route::post('payment-vouchers/{id}/post',             [PaymentVoucherController::class, 'post']);
+        Route::post('payment-vouchers/{id}/correct-wht-gl',   [PaymentVoucherController::class, 'correctWithholdingTaxGl']);
+
+        // ── Purchases Reports ────────────────────────────────────────────────
+        Route::prefix('reports')->group(function () {
+            Route::get('form-data',              [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'formData']);
+            Route::get('purchase-summary',       [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'purchaseSummary']);
+            Route::get('purchase-orders',        [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'purchaseOrdersReport']);
+            Route::get('grn-report',             [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'grnReport']);
+            Route::get('supplier-aged-analysis', [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'supplierAgedAnalysis']);
+            Route::get('supplier-statement',     [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'supplierStatement']);
+            Route::get('outstanding-pos',        [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'outstandingPOs']);
+            Route::get('top-suppliers',          [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'topSuppliers']);
+            Route::get('voucher-payment',        [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'voucherPaymentReport']);
+            Route::get('supplier-credit-notes',  [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'supplierCreditNotes']);
+            Route::get('export',                 [\App\Http\Controllers\Purchases\PurchaseReportsController::class, 'export']);
+        });
     });
 
     // ── Sales Transactions ─────────────────────────────────────────────────
@@ -904,8 +966,29 @@ Route::middleware('auth:api')->group(function () {
     Route::get('analytics/purchases/insights',     [PurchasesAnalyticsController::class, 'insights']);
     Route::post('analytics/purchases/advice',      [PurchasesAnalyticsController::class, 'advice']);
 
+    // ── Financial Analytics ──────────────────────────────────────────────────
+    Route::get('analytics/financial/summary',      [FinancialAnalyticsController::class, 'summary']);
+
     // ── AI Chat ──────────────────────────────────────────────────────────────
     Route::post('analytics/chat',                  [AiChatController::class, 'chat']);
+
+    // ── ESP (External Service Providers) ─────────────────────────────────────
+    Route::get   ('esp/dashboard',                       [EspController::class, 'dashboard']);
+    Route::get   ('esp/providers/next-code',             [EspController::class, 'nextCode']);
+    Route::get   ('esp/providers',                       [EspController::class, 'indexProviders']);
+    Route::post  ('esp/providers',                       [EspController::class, 'storeProvider']);
+    Route::get   ('esp/providers/{provider}',            [EspController::class, 'showProvider']);
+    Route::put   ('esp/providers/{provider}',            [EspController::class, 'updateProvider']);
+    Route::get   ('esp/farmers/{farmerId}/credit',       [EspController::class, 'farmerCredit']);
+    Route::get   ('esp/farmer-sales',                    [EspController::class, 'indexFarmerSales']);
+    Route::post  ('esp/farmer-sales',                    [EspController::class, 'storeFarmerSale']);
+    Route::get   ('esp/farmer-sales/{sale}',             [EspController::class, 'showFarmerSale']);
+    Route::get   ('esp/company-purchases',               [EspController::class, 'indexCompanyPurchases']);
+    Route::post  ('esp/company-purchases',               [EspController::class, 'storeCompanyPurchase']);
+    Route::get   ('esp/company-purchases/{purchase}',    [EspController::class, 'showCompanyPurchase']);
+    Route::get   ('esp/settlements',                     [EspController::class, 'indexSettlements']);
+    Route::post  ('esp/settlements/preview',             [EspController::class, 'previewSettlement']);
+    Route::post  ('esp/settlements',                     [EspController::class, 'postSettlement']);
 
     // ── Audit ────────────────────────────────────────────────────────────────
     Route::post('audit/run', [AuditController::class, 'run']);
@@ -1220,6 +1303,65 @@ Route::middleware('auth:api')->group(function () {
         });
     });
 
+    // ── Casual Workers ────────────────────────────────────────────────────────
+    Route::prefix('casual-workers')->group(function () {
+        Route::get('kpis',                                         [\App\Http\Controllers\CasualWorkers\CasualWorkerController::class,         'kpis']);
+        Route::get('form-data',                                    [\App\Http\Controllers\CasualWorkers\CasualWorkerController::class,         'formData']);
+        Route::get('next-ref',                                     [\App\Http\Controllers\CasualWorkers\CasualWorkerController::class,         'nextRef']);
+        Route::get('/',                                            [\App\Http\Controllers\CasualWorkers\CasualWorkerController::class,         'index']);
+        Route::post('/',                                           [\App\Http\Controllers\CasualWorkers\CasualWorkerController::class,         'store']);
+
+        // Sub-resource prefix groups must come BEFORE the {id} wildcard so that
+        // GET /casual-workers/attendance etc. are not swallowed by show().
+        Route::prefix('trades')->group(function () {
+            Route::get('/',        [\App\Http\Controllers\CasualWorkers\CasualWorkerTradeController::class,   'index']);
+            Route::post('/',       [\App\Http\Controllers\CasualWorkers\CasualWorkerTradeController::class,   'store']);
+            Route::put('{id}',     [\App\Http\Controllers\CasualWorkers\CasualWorkerTradeController::class,   'update']);
+            Route::delete('{id}',  [\App\Http\Controllers\CasualWorkers\CasualWorkerTradeController::class,   'destroy']);
+        });
+
+        Route::prefix('attendance')->group(function () {
+            Route::get('/',         [\App\Http\Controllers\CasualWorkers\CasualWorkerAttendanceController::class, 'index']);
+            Route::post('bulk',     [\App\Http\Controllers\CasualWorkers\CasualWorkerAttendanceController::class, 'bulkSave']);
+            Route::put('{id}',      [\App\Http\Controllers\CasualWorkers\CasualWorkerAttendanceController::class, 'update']);
+            Route::get('summary',   [\App\Http\Controllers\CasualWorkers\CasualWorkerAttendanceController::class, 'summary']);
+            Route::get('dates',     [\App\Http\Controllers\CasualWorkers\CasualWorkerAttendanceController::class, 'dates']);
+        });
+
+        Route::prefix('pay-rates')->group(function () {
+            Route::get('/',        [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRateController::class, 'index']);
+            Route::post('/',       [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRateController::class, 'store']);
+            Route::put('{id}',     [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRateController::class, 'update']);
+            Route::delete('{id}',  [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRateController::class, 'destroy']);
+        });
+
+        Route::prefix('pay-runs')->group(function () {
+            Route::get('/',                      [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'index']);
+            Route::post('/',                     [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'store']);
+            Route::get('report',                 [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'payRunReport']);
+            Route::get('{id}',                   [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'show']);
+            Route::post('{id}/generate',         [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'generate']);
+            Route::post('{id}/generate-chunked', [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'generateChunked']);
+            Route::post('{id}/approve',          [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'approve']);
+            Route::post('{id}/post-earnings',        [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'postEarnings']);
+            Route::post('{id}/post-worker-earning', [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'postWorkerEarning']);
+            Route::get('{id}/mpesa-export',      [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'mpesaExport']);
+            Route::put('{runId}/items/{itemId}', [\App\Http\Controllers\CasualWorkers\CasualWorkerPayRunController::class, 'updateItem']);
+        });
+
+        Route::prefix('earning-types')->group(function () {
+            Route::get('/',       [\App\Http\Controllers\CasualWorkers\CasualEarningTypeController::class, 'index']);
+            Route::post('/',      [\App\Http\Controllers\CasualWorkers\CasualEarningTypeController::class, 'store']);
+            Route::put('{id}',    [\App\Http\Controllers\CasualWorkers\CasualEarningTypeController::class, 'update']);
+            Route::delete('{id}', [\App\Http\Controllers\CasualWorkers\CasualEarningTypeController::class, 'destroy']);
+        });
+
+        // Wildcard routes last — must not shadow the prefix groups above.
+        Route::get('{id}',    [\App\Http\Controllers\CasualWorkers\CasualWorkerController::class, 'show']);
+        Route::put('{id}',    [\App\Http\Controllers\CasualWorkers\CasualWorkerController::class, 'update']);
+        Route::delete('{id}', [\App\Http\Controllers\CasualWorkers\CasualWorkerController::class, 'destroy']);
+    });
+
     // ── Blockchain ────────────────────────────────────────────────────────────
     Route::prefix('blockchain')->group(function () {
         Route::get('anchor',    [\App\Http\Controllers\Blockchain\BlockchainController::class, 'getAnchor']);
@@ -1299,6 +1441,93 @@ Route::middleware('auth:api')->group(function () {
             return response()->json(['success' => true, 'data' => ['device' => null, 'history' => []]]);
         }
     });
+});
+
+// ── Transport ───────────────────────────────────────────────────────────────
+Route::middleware('auth:api')->prefix('transport')->group(function () {
+    Route::get('kpis',            [TransportDashboardController::class, 'kpis'])->middleware('permission:view-transport');
+    Route::get('fleet-registry',  [TransportDashboardController::class, 'fleetRegistry'])->middleware('permission:view-transport');
+
+    // Routes (transport_routes)
+    Route::get('routes',          [TransportRouteController::class, 'index'])->middleware('permission:view-transport');
+    Route::post('routes',         [TransportRouteController::class, 'store'])->middleware('permission:manage-transport');
+    Route::put('routes/{id}',     [TransportRouteController::class, 'update'])->middleware('permission:manage-transport');
+    Route::delete('routes/{id}',  [TransportRouteController::class, 'destroy'])->middleware('permission:manage-transport');
+
+    // Loading orders
+    Route::get('loading-orders/form-data',     [LoadingOrderController::class, 'formData'])->middleware('permission:view-transport');
+    Route::get('loading-orders',               [LoadingOrderController::class, 'index'])->middleware('permission:view-transport');
+    Route::get('loading-orders/{id}',          [LoadingOrderController::class, 'show'])->middleware('permission:view-transport');
+    Route::post('loading-orders',              [LoadingOrderController::class, 'store'])->middleware('permission:manage-transport');
+    Route::put('loading-orders/{id}',          [LoadingOrderController::class, 'update'])->middleware('permission:manage-transport');
+    Route::post('loading-orders/{id}/dispatch',         [LoadingOrderController::class, 'dispatch'])->middleware('permission:manage-transport');
+    Route::post('loading-orders/{id}/confirm-delivery', [LoadingOrderController::class, 'confirmDelivery'])->middleware('permission:manage-transport');
+    Route::delete('loading-orders/{id}',       [LoadingOrderController::class, 'destroy'])->middleware('permission:manage-transport');
+
+    // Fuel entries
+    Route::get('fuel-entries/form-data', [FuelEntryController::class, 'formData'])->middleware('permission:view-transport');
+    Route::get('fuel-entries',           [FuelEntryController::class, 'index'])->middleware('permission:view-transport');
+    Route::post('fuel-entries',          [FuelEntryController::class, 'store'])->middleware('permission:manage-transport');
+    Route::put('fuel-entries/{id}',      [FuelEntryController::class, 'update'])->middleware('permission:manage-transport');
+    Route::delete('fuel-entries/{id}',   [FuelEntryController::class, 'destroy'])->middleware('permission:manage-transport');
+
+    // Maintenance records
+    Route::get('maintenance-records/form-data', [MaintenanceRecordController::class, 'formData'])->middleware('permission:view-transport');
+    Route::get('maintenance-records',           [MaintenanceRecordController::class, 'index'])->middleware('permission:view-transport');
+    Route::post('maintenance-records',          [MaintenanceRecordController::class, 'store'])->middleware('permission:manage-transport');
+    Route::put('maintenance-records/{id}',      [MaintenanceRecordController::class, 'update'])->middleware('permission:manage-transport');
+    Route::delete('maintenance-records/{id}',   [MaintenanceRecordController::class, 'destroy'])->middleware('permission:manage-transport');
+});
+
+
+// ── HRM ────────────────────────────────────────────────────────────────────
+Route::middleware('auth:api')->prefix('hrm')->group(function () {
+    // KPIs
+    Route::get('kpis', [\App\Http\Controllers\Hrm\HrmKpiController::class, 'index'])->middleware('permission:view-hrm');
+
+    // Employees
+    Route::get('employees/form-data', [\App\Http\Controllers\Hrm\EmployeeController::class, 'formData'])->middleware('permission:view-hrm');
+    Route::get('employees',           [\App\Http\Controllers\Hrm\EmployeeController::class, 'index'])->middleware('permission:view-hrm');
+    Route::get('employees/{id}',      [\App\Http\Controllers\Hrm\EmployeeController::class, 'show'])->middleware('permission:view-hrm');
+    Route::post('employees',          [\App\Http\Controllers\Hrm\EmployeeController::class, 'store'])->middleware('permission:manage-hrm');
+    Route::put('employees/{id}',      [\App\Http\Controllers\Hrm\EmployeeController::class, 'update'])->middleware('permission:manage-hrm');
+    Route::delete('employees/{id}',   [\App\Http\Controllers\Hrm\EmployeeController::class, 'destroy'])->middleware('permission:manage-hrm');
+
+    // Departments
+    Route::get('departments',         [\App\Http\Controllers\Hrm\DepartmentController::class, 'index'])->middleware('permission:view-hrm');
+    Route::post('departments',        [\App\Http\Controllers\Hrm\DepartmentController::class, 'store'])->middleware('permission:manage-hrm');
+    Route::put('departments/{id}',    [\App\Http\Controllers\Hrm\DepartmentController::class, 'update'])->middleware('permission:manage-hrm');
+    Route::delete('departments/{id}', [\App\Http\Controllers\Hrm\DepartmentController::class, 'destroy'])->middleware('permission:manage-hrm');
+
+    // Job titles
+    Route::get('job-titles',          [\App\Http\Controllers\Hrm\JobTitleController::class, 'index'])->middleware('permission:view-hrm');
+    Route::post('job-titles',         [\App\Http\Controllers\Hrm\JobTitleController::class, 'store'])->middleware('permission:manage-hrm');
+    Route::put('job-titles/{id}',     [\App\Http\Controllers\Hrm\JobTitleController::class, 'update'])->middleware('permission:manage-hrm');
+    Route::delete('job-titles/{id}',  [\App\Http\Controllers\Hrm\JobTitleController::class, 'destroy'])->middleware('permission:manage-hrm');
+});
+
+
+// ── Payroll ──────────────────────────────────────────────────────────────────
+Route::middleware('auth:api')->prefix('payroll')->group(function () {
+    Route::get('periods',                       [PayrollController::class, 'index'])->middleware('permission:view-payroll');
+    Route::post('periods',                      [PayrollController::class, 'store'])->middleware('permission:manage-payroll');
+    Route::get('periods/{id}',                  [PayrollController::class, 'show'])->middleware('permission:view-payroll');
+    Route::post('periods/{id}/generate',        [PayrollController::class, 'generate'])->middleware('permission:manage-payroll');
+    Route::post('periods/{id}/approve',         [PayrollController::class, 'approve'])->middleware('permission:manage-payroll');
+    Route::post('periods/{id}/post-to-gl',      [PayrollController::class, 'postToGl'])->middleware('permission:manage-payroll');
+    Route::put('periods/{periodId}/items/{itemId}', [PayrollController::class, 'updateItem'])->middleware('permission:manage-payroll');
+    Route::get('periods/{id}/bank-file',        [PayrollController::class, 'bankFile'])->middleware('permission:view-payroll');
+    Route::get('periods/{id}/paye',             [PayrollController::class, 'payeComputation'])->middleware('permission:view-payroll');
+    Route::get('periods/{id}/nhif',             [PayrollController::class, 'nhifReturns'])->middleware('permission:view-payroll');
+    Route::get('periods/{id}/nssf',             [PayrollController::class, 'nssfReturns'])->middleware('permission:view-payroll');
+
+    Route::get('p9-report',                     [PayrollController::class, 'p9Report'])->middleware('permission:view-payroll');
+    Route::get('summary-report',                [PayrollController::class, 'summaryReport'])->middleware('permission:view-payroll');
+
+    Route::get('components',                    [PayrollController::class, 'componentsIndex'])->middleware('permission:view-payroll');
+    Route::post('components',                   [PayrollController::class, 'componentsStore'])->middleware('permission:manage-payroll');
+    Route::put('components/{id}',               [PayrollController::class, 'componentsUpdate'])->middleware('permission:manage-payroll');
+    Route::delete('components/{id}',            [PayrollController::class, 'componentsDestroy'])->middleware('permission:manage-payroll');
 });
 
 

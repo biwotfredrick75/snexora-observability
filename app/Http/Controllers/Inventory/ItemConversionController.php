@@ -22,7 +22,7 @@ class ItemConversionController extends Controller
     {
         Item::findOrFail($stockId);
         $validated = $request->validate([
-            'component_id'      => 'required|integer|exists:items,id',
+            'component_id'      => 'required|string|exists:items,stock_id',
             'quantity_produced' => 'required|numeric|min:0',
         ]);
         $validated['stock_id'] = $stockId;

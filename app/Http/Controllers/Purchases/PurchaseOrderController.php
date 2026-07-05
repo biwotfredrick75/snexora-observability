@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Purchases;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\CompanyPreference;
@@ -267,16 +268,19 @@ class PurchaseOrderController extends Controller
             if ($po->type === 'grn') {
                 $this->postGrnReceipt($po, $approver);
                 $po->update(array_merge($approvals, ['status' => 'received']));
+                $this->broadcastDashboard('purchases', 'grn_received', $po);
                 return ApiResponse::success($po->fresh(), 'GRN approved and goods received');
             }
 
             if ($po->type === 'invoice') {
                 $this->postDirectInvoice($po, $approver);
                 $po->update(array_merge($approvals, ['status' => 'received']));
+                $this->broadcastDashboard('purchases', 'invoice_received', $po);
                 return ApiResponse::success($po->fresh(), 'Invoice approved — stock & GL posted');
             }
 
             $po->update(array_merge($approvals, ['status' => 'ceo_approved']));
+            $this->broadcastDashboard('purchases', 'po_approved', $po);
             return ApiResponse::success($po->fresh(), 'CEO/Operations approved');
         });
     }
@@ -292,8 +296,23 @@ class PurchaseOrderController extends Controller
             $approver = auth()->user()?->user_id ?? 'system';
             $this->postGrnReceipt($po, $approver);
             $po->update(['status' => 'received']);
+            $this->broadcastDashboard('purchases', 'grn_received', $po);
             return ApiResponse::success($po->fresh(), 'Goods received — stock & GL posted');
         });
+    }
+
+    // Mirrors the Sales controllers' broadcast pattern: never let a Reverb
+    // hiccup turn a successful purchase posting into an apparent request failure.
+    private function broadcastDashboard(string $scope, string $action, PurchaseOrder $po): void
+    {
+        try {
+            broadcast(new DashboardEvent($scope, $action, [
+                'po_no'  => $po->po_no,
+                'amount' => (float) $po->amount_total,
+            ]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
     }
 
     // ── GL view for purchase orders (GRN / Invoice) ───────────────────────────
@@ -304,12 +323,12 @@ class PurchaseOrderController extends Controller
         $glType = $po->type === 'invoice' ? 25 : StockMovement::TYPE_GRN; // 25 = direct invoice GL type
 
         $glEntries = DB::table('gld_transactions as g')
-            ->leftJoin('0_chart_master as cm', 'cm.account_code', '=', 'g.account_code')
+            ->leftJoin('gl_accounts as cm', 'cm.code', '=', 'g.account_code')
             ->where('g.reference', $po->po_no)
             ->where('g.type', $glType)
             ->select(
                 'g.account_code',
-                DB::raw('COALESCE(cm.account_name, g.account_code) AS account_name'),
+                DB::raw('COALESCE(cm.name, g.account_code) AS account_name'),
                 'g.narration as memo',
                 'g.tran_date',
                 'g.reference',
@@ -533,7 +552,7 @@ class PurchaseOrderController extends Controller
                 'po.po_no as grn_no',
                 'poi.stock_id',
                 'poi.description',
-                DB::raw('DATE(po.delivery_date) as received_on'),
+                DB::raw('CAST(po.delivery_date AS DATE) as received_on'),
                 DB::raw('poi.qty as qty_received'),
                 'poi.price_before_tax',
                 'poi.unit'
