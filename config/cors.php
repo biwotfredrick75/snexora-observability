@@ -7,7 +7,7 @@ return [
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
-        'https://nexoraerp.m-strategicinvestments.com',
+        'https://nexora.m-strategicinvestments.com',
         'http://localhost:5173',
     ],
 
