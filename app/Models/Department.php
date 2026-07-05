@@ -7,8 +7,6 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Department extends Model
 {
-    protected $table = 'hrm_departments';
-
     protected $fillable = [
         'code', 'name', 'description', 'inactive',
     ];
