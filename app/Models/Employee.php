@@ -8,8 +8,6 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Employee extends Model
 {
-    protected $table = 'hrm_employees';
-
     protected $fillable = [
         'emp_no', 'first_name', 'middle_name', 'last_name', 'full_name',
         'gender', 'date_of_birth', 'national_id',
