@@ -8,6 +8,7 @@ return [
 
     'allowed_origins' => [
         'https://nexora.m-strategicinvestments.com',
+        'https://nexoraerp.m-strategicinvestments.com',
         'http://localhost:5173',
     ],
 
