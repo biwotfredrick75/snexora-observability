@@ -11,6 +11,7 @@ use App\Models\SalesDeliveryItem;
 use App\Models\SalesInvoice;
 use App\Models\SalesInvoiceItem;
 use App\Models\StockMovement;
+use App\Services\Inventory\StockMovementService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use App\Traits\ValidatesSellingPrice;
@@ -250,7 +251,37 @@ class SalesDeliveryController extends Controller
         $company   = DB::table('company_preferences')->first();
         $glSetting = DB::table('gl_settings')->first();
 
-        return DB::transaction(function () use ($delivery, $company, $glSetting) {
+        $shortfalls = [];
+
+        try {
+            return DB::transaction(function () use ($delivery, $company, $glSetting, &$shortfalls) {
+            // Resolve stock location code for movements; fall back to first active location
+            $locCode = $delivery->location_id
+                ? DB::table('inventory_locations')->where('id', $delivery->location_id)->value('code')
+                : DB::table('inventory_locations')->where('inactive', 0)->value('code');
+
+            // ── Stock availability check — a delivery must not silently oversell
+            // (or, on the invoice side, silently no-op) when the chosen location
+            // doesn't actually hold the stock being moved ──
+            if (!($glSetting->allow_negative_inventory ?? false)) {
+                foreach ($delivery->items as $dnItem) {
+                    $mbFlag = DB::table('items')->where('stock_id', $dnItem->stock_id)->value('mb_flag');
+                    if ($mbFlag === 'S') continue; // service items aren't stock-controlled
+
+                    $available = StockMovementService::availableQty($dnItem->stock_id, $locCode, lockForUpdate: true);
+                    if ($available < (float) $dnItem->qty) {
+                        $shortfalls[] = [
+                            'stock_id'  => $dnItem->stock_id,
+                            'required'  => (float) $dnItem->qty,
+                            'available' => max(0, $available),
+                        ];
+                    }
+                }
+                if (!empty($shortfalls)) {
+                    throw new \RuntimeException('insufficient_stock');
+                }
+            }
+
             $delivery->update(['status' => 'placed']);
 
             $createdBy     = auth()->user()?->user_id ?? 'system';
@@ -259,11 +290,6 @@ class SalesDeliveryController extends Controller
             $totalGrossSales = 0.0;
             $totalDiscounts  = 0.0;
             $totalTax        = 0.0;
-
-            // Resolve stock location code for movements; fall back to first active location
-            $locCode = $delivery->location_id
-                ? DB::table('inventory_locations')->where('id', $delivery->location_id)->value('code')
-                : DB::table('inventory_locations')->where('inactive', 0)->value('code');
 
             foreach ($delivery->items as $dnItem) {
                 $item = DB::table('items')->where('stock_id', $dnItem->stock_id)
@@ -456,7 +482,20 @@ class SalesDeliveryController extends Controller
                 \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
             }
             return ApiResponse::success($delivery, 'Sales delivery placed');
-        });
+            });
+        } catch (\RuntimeException $e) {
+            if ($e->getMessage() === 'insufficient_stock') {
+                $lines = array_map(
+                    fn($s) => "{$s['stock_id']}: need {$s['required']}, have {$s['available']}",
+                    $shortfalls
+                );
+                return ApiResponse::error(
+                    'Insufficient stock at the selected location — ' . implode('; ', $lines),
+                    422
+                );
+            }
+            throw $e;
+        }
     }
 
     public function cancel(int $id): JsonResponse
@@ -754,6 +793,8 @@ class SalesDeliveryController extends Controller
             $invNo         = $invoice->inv_no;
             $subTotal      = 0;
             $totalGrossSales = 0.0;
+            $totalDiscounts  = 0.0;
+            $totalTax        = 0.0;
 
             foreach ($data['items'] as $itemData) {
                 $dnItem = $delivery->items->firstWhere('id', $itemData['dn_item_id']);
@@ -822,12 +863,15 @@ class SalesDeliveryController extends Controller
                     }
 
                     $totalGrossSales += $gross;
+                    $totalDiscounts  += $discAmt;
+                    $totalTax        += $taxAmount;
 
+                    // CR Sales Revenue (gross, before discount) — mirrors SalesInvoiceController::place()
                     GldTransaction::create([
                         'trans_no' => $invoice->id, 'type' => StockMovement::TYPE_INVOICE,
                         'tran_date' => $tranDate, 'account_code' => $salesAccount,
                         'reference' => $invNo, 'narration' => "Sales — {$dnItem->description} ({$invNo})",
-                        'amount' => -($netRevenue - $taxAmount), 'created_by' => $createdBy,
+                        'amount' => -$gross, 'created_by' => $createdBy,
                         'dimension_id' => $dimId, 'dimension2_id' => $dim2Id,
                     ]);
 
@@ -843,25 +887,27 @@ class SalesDeliveryController extends Controller
 
                     if ($discAmt != 0) {
                         $discGl = ($company->discount_gl_code ?? null) ?: ($glSetting->sales_discount_account ?? 'DISCOUNT');
+                        // DR Discount (contra-revenue — positive = debit)
                         GldTransaction::create([
                             'trans_no' => $invoice->id, 'type' => StockMovement::TYPE_INVOICE,
                             'tran_date' => $tranDate, 'account_code' => $discGl,
                             'reference' => $invNo, 'narration' => "Discount — {$dnItem->description} ({$invNo})",
-                            'amount' => -$discAmt, 'created_by' => $createdBy,
+                            'amount' => $discAmt, 'created_by' => $createdBy,
                             'dimension_id' => $dimId, 'dimension2_id' => $dim2Id,
                         ]);
                     }
                 }
             }
 
-            // ── GL: DR Debtors ────────────────────────────────────────────────
-            if ($totalGrossSales != 0) {
+            // ── GL: DR Debtors = gross - discounts + tax ───────────────────────
+            $debtorsAmount = round($totalGrossSales - $totalDiscounts + $totalTax, 2);
+            if ($debtorsAmount != 0) {
                 $debtorsGl = ($company->debtors_gl_code ?? null) ?: 'DEBTORS';
                 GldTransaction::create([
                     'trans_no' => $invoice->id, 'type' => StockMovement::TYPE_INVOICE,
                     'tran_date' => $tranDate, 'account_code' => $debtorsGl,
                     'reference' => $invNo, 'narration' => "Debtors — {$invNo}",
-                    'amount' => round($totalGrossSales, 2), 'created_by' => $createdBy,
+                    'amount' => $debtorsAmount, 'created_by' => $createdBy,
                     'dimension_id' => $delivery->dimension_id, 'dimension2_id' => $delivery->dimension2_id,
                 ]);
             }

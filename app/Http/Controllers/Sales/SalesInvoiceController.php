@@ -360,7 +360,36 @@ public function showCredit(int $id): JsonResponse
         $company   = DB::table('company_preferences')->first();
         $glSetting = DB::table('gl_settings')->first();
 
-        $placed = DB::transaction(function () use ($invoice, $company, $glSetting) {
+        $shortfalls = [];
+
+        try {
+            $placed = DB::transaction(function () use ($invoice, $company, $glSetting, &$shortfalls) {
+            // Resolve stock location code for movements; fall back to first active location
+            $locCode = $invoice->location_id
+                ? DB::table('inventory_locations')->where('id', $invoice->location_id)->value('code')
+                : DB::table('inventory_locations')->where('inactive', 0)->value('code');
+
+            // ── Stock availability check — a sale must not silently no-op when
+            // the chosen location doesn't actually hold the stock being sold ──
+            if (!($glSetting->allow_negative_inventory ?? false)) {
+                foreach ($invoice->items as $invoiceItem) {
+                    $mbFlag = DB::table('items')->where('stock_id', $invoiceItem->stock_id)->value('mb_flag');
+                    if ($mbFlag === 'S') continue; // service items aren't stock-controlled
+
+                    $available = StockMovementService::availableQty($invoiceItem->stock_id, $locCode, lockForUpdate: true);
+                    if ($available < (float) $invoiceItem->qty) {
+                        $shortfalls[] = [
+                            'stock_id'  => $invoiceItem->stock_id,
+                            'required'  => (float) $invoiceItem->qty,
+                            'available' => max(0, $available),
+                        ];
+                    }
+                }
+                if (!empty($shortfalls)) {
+                    throw new \RuntimeException('insufficient_stock');
+                }
+            }
+
             $invoice->update(['status' => 'placed']);
 
             $createdBy  = auth()->user()?->user_id ?? 'system';
@@ -368,11 +397,6 @@ public function showCredit(int $id): JsonResponse
             $tranDate   = $invoice->invoice_date instanceof \Carbon\Carbon
                 ? $invoice->invoice_date->toDateString()
                 : $invoice->invoice_date;
-
-            // Resolve stock location code for movements; fall back to first active location
-            $locCode = $invoice->location_id
-                ? DB::table('inventory_locations')->where('id', $invoice->location_id)->value('code')
-                : DB::table('inventory_locations')->where('inactive', 0)->value('code');
 
             $totalGrossSales = 0.0;
             $totalDiscounts  = 0.0;
@@ -412,7 +436,8 @@ public function showCredit(int $id): JsonResponse
                             'comments'  => $invoice->comments ?? '',
                             'vehicle'   => $invoice->vehicle  ?? '',
                             'shift'     => $invoice->shift    ?? '',
-                        ]
+                        ],
+                        allowNegative: (bool) ($glSetting->allow_negative_inventory ?? false)
                     );
                 }
 
@@ -575,7 +600,20 @@ public function showCredit(int $id): JsonResponse
                 \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
             }
             return $invoice->fresh();
-        });
+            });
+        } catch (\RuntimeException $e) {
+            if ($e->getMessage() === 'insufficient_stock') {
+                $lines = array_map(
+                    fn($s) => "{$s['stock_id']}: need {$s['required']}, have {$s['available']}",
+                    $shortfalls
+                );
+                return ApiResponse::error(
+                    'Insufficient stock at the selected location — ' . implode('; ', $lines),
+                    422
+                );
+            }
+            throw $e;
+        }
 
         if (! in_array($placed->etims_status, ['signed', 'stamped'])) {
             try {

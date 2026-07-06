@@ -100,13 +100,21 @@ class StockMovementService
      *
      * Older batches are consumed first.  If batched stock is exhausted, remaining qty
      * is drawn from legacy unbatched movements (batch_no = '').
-     * Returns the unfulfilled quantity (0 when fully satisfied).
+     *
+     * If $allowNegative is true (company setting gl_settings.allow_negative_inventory),
+     * any quantity still unfulfilled after batches and unbatched stock are exhausted is
+     * posted as one final movement at the location's weighted-average cost, taking the
+     * balance negative — callers must not silently skip this, otherwise a sale can
+     * complete with revenue/COGS posted while no stock movement records the outflow.
+     *
+     * Returns the unfulfilled quantity (0 when fully satisfied or backordered).
      */
     public static function deductFifo(
         string $stockId,
         string $locCode,
         float  $needed,
-        array  $shared
+        array  $shared,
+        bool   $allowNegative = false
     ): float {
         $boilerplate = [
             'loc_code_from' => null,
@@ -164,7 +172,25 @@ class StockMovementService
             }
         }
 
-        return max(0.0, $needed);   // 0 = fully satisfied
+        // Still short after batches + unbatched stock — post the remainder at the
+        // location's weighted-average cost so the balance goes negative instead of
+        // the shortfall silently vanishing.
+        if ($needed > 0 && $allowNegative) {
+            $unitCost = self::weightedAveragePrice($stockId, $locCode);
+            StockMovement::create(array_merge($boilerplate, $shared, [
+                'stock_id'      => $stockId,
+                'loc_code'      => $locCode,
+                'qty'           => -$needed,
+                'price'         => $unitCost,
+                'standard_cost' => $unitCost,
+                'batch_no'      => '',
+                'date_moved'    => $tranDate,
+                'unique_key'    => $baseUniqueKey ? "{$baseUniqueKey}-BACKORDER" : null,
+            ]));
+            $needed = 0;
+        }
+
+        return max(0.0, $needed);   // 0 = fully satisfied (or backordered when allowed)
     }
 
     /**

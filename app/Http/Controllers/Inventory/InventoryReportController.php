@@ -20,8 +20,7 @@ class InventoryReportController extends Controller
             ->where('i.inactive', 0)
             ->groupBy(
                 'i.stock_id', 'i.description', 'i.units',
-                'c.name', 'l.code', 'l.name',
-                'i.purchase_cost', 'i.material_cost', 'i.labour_cost', 'i.overhead_cost'
+                'c.name', 'l.code', 'l.name'
             )
             ->havingRaw('SUM(sm.qty) > 0')
             ->selectRaw("
@@ -29,8 +28,8 @@ class InventoryReportController extends Controller
                 c.name as category,
                 l.code as loc_code, l.name as location_name,
                 ROUND(SUM(sm.qty), 4) as qty_on_hand,
-                ROUND(i.purchase_cost + i.material_cost + i.labour_cost + i.overhead_cost, 4) as unit_cost,
-                ROUND(SUM(sm.qty) * (i.purchase_cost + i.material_cost + i.labour_cost + i.overhead_cost), 4) as total_value
+                ROUND(SUM(sm.qty * sm.standard_cost) / SUM(sm.qty), 4) as unit_cost,
+                ROUND(SUM(sm.qty * sm.standard_cost), 4) as total_value
             ")
             ->orderBy('i.description');
 
@@ -159,7 +158,7 @@ class InventoryReportController extends Controller
                 i.stock_id, i.description, i.units,
                 sm.loc_code, l.name as location_name,
                 ROUND(SUM(sm.qty), 4) as qty_on_hand,
-                ROUND(SUM(sm.qty) * (i.purchase_cost + i.material_cost + i.labour_cost + i.overhead_cost), 4) as stock_value
+                ROUND(SUM(sm.qty * sm.standard_cost), 4) as stock_value
             ");
 
         if ($request->filled('loc_code')) {
@@ -217,7 +216,7 @@ class InventoryReportController extends Controller
                 l.code as loc_code, l.name as location_name,
                 COUNT(DISTINCT sm.stock_id) as items_count,
                 ROUND(SUM(sm.qty), 4) as total_units,
-                ROUND(SUM(sm.qty * (i.purchase_cost + i.material_cost + i.labour_cost + i.overhead_cost)), 4) as total_value
+                ROUND(SUM(sm.qty * sm.standard_cost), 4) as total_value
             ")
             ->orderByRaw('total_value DESC')
             ->get();

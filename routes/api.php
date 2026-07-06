@@ -86,6 +86,7 @@ use App\Http\Controllers\Sales\CreditStatusController;
 use App\Http\Controllers\Sales\PosController;
 use App\Http\Controllers\Inventory\InventoryTransferController;
 use App\Http\Controllers\Inventory\InventoryAdjustmentController;
+use App\Http\Controllers\Inventory\AdjustmentReasonController;
 use App\Http\Controllers\Inventory\StockRequisitionController;
 use App\Http\Controllers\Inventory\ConsumableIssueController;
 use App\Http\Controllers\Inventory\StockTakeController;
@@ -608,6 +609,12 @@ Route::middleware('auth:api')->group(function () {
         Route::post('adjustments/{id}/process',      [InventoryAdjustmentController::class, 'process']);
         Route::delete('adjustments/{id}',            [InventoryAdjustmentController::class, 'destroy']);
 
+        // Adjustment Reasons (spillage, shrinkage, theft, sampling, expiry, consumable, ...)
+        Route::get('adjustment-reasons',              [AdjustmentReasonController::class, 'index']);
+        Route::post('adjustment-reasons',              [AdjustmentReasonController::class, 'store']);
+        Route::put('adjustment-reasons/{id}',          [AdjustmentReasonController::class, 'update']);
+        Route::delete('adjustment-reasons/{id}',       [AdjustmentReasonController::class, 'destroy']);
+
         // Stock Requisitions
         Route::get('requisitions',                   [StockRequisitionController::class, 'index']);
         Route::post('requisitions',                  [StockRequisitionController::class, 'store']);
@@ -1127,6 +1134,7 @@ Route::middleware('auth:api')->group(function () {
 
         // Bulk Milk Purchases
         Route::get('milk-purchases/form-data',             [MilkPurchaseController::class, 'formData']);
+        Route::get('milk-purchases/summary',              [MilkPurchaseController::class, 'summary']);
         Route::post('milk-purchases/reserve-reference',   [MilkPurchaseController::class, 'reserveReference']);
         Route::post('milk-purchases/bulk-approve',        [MilkPurchaseController::class, 'bulkApprove']);
         Route::post('milk-purchases/bulk-reject',         [MilkPurchaseController::class, 'bulkReject']);

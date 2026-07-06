@@ -10,6 +10,7 @@ use App\Models\MilkPurchase;
 use App\Models\MilkRoute;
 use App\Models\MilkCollectionShift;
 use App\Services\Farmers\MilkPurchaseApprovalService;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -61,6 +62,54 @@ class MilkPurchaseController extends Controller
         $limit = min((int) $request->get('limit', 100), 200);
 
         return ApiResponse::success($query->limit($limit)->get(), 'Milk purchases retrieved');
+    }
+
+    // ── Lightweight aggregated summary for dashboards (no raw rows) ──────────
+    public function summary(Request $request): JsonResponse
+    {
+        $dateTo = $request->filled('to')
+            ? Carbon::parse($request->to)->toDateString()
+            : now()->toDateString();
+
+        $dateFrom = $request->filled('from')
+            ? Carbon::parse($request->from)->toDateString()
+            : Carbon::parse($dateTo)->subDays(6)->toDateString();
+
+        // Cap the range to avoid enormous payloads
+        if (Carbon::parse($dateFrom)->diffInDays(Carbon::parse($dateTo)) > 90) {
+            $dateFrom = Carbon::parse($dateTo)->subDays(89)->toDateString();
+        }
+
+        $raw = DB::table('milk_purchases')
+            ->where('status', 'approved')
+            ->whereBetween('invoice_date', [$dateFrom, $dateTo])
+            ->selectRaw('invoice_date AS date, SUM(total_qty) AS qty, SUM(total_amount) AS amount')
+            ->groupBy('invoice_date')
+            ->get()
+            ->keyBy('date');
+
+        // Fill every day in the range (no gaps)
+        $days = [];
+        for ($d = Carbon::parse($dateFrom); $d->lte(Carbon::parse($dateTo)); $d->addDay()) {
+            $key = $d->toDateString();
+            $row = $raw->get($key);
+            $days[] = [
+                'date'   => $key,
+                'label'  => $d->format('D'),
+                'qty'    => $row ? round((float) $row->qty, 3) : 0,
+                'amount' => $row ? round((float) $row->amount, 2) : 0,
+            ];
+        }
+
+        $today = collect($days)->firstWhere('date', now()->toDateString());
+
+        return ApiResponse::success([
+            'today' => [
+                'qty'    => $today['qty']    ?? 0,
+                'amount' => $today['amount'] ?? 0,
+            ],
+            'days' => $days,
+        ], 'Milk purchase summary');
     }
 
     // ── Reserve a reference number atomically (gap-free sequence) ────────────
