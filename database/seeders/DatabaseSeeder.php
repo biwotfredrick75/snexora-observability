@@ -36,6 +36,9 @@ class DatabaseSeeder extends Seeder
         $this->call(GlAccountClassSeeder::class);
         $this->call(ChartOfAccountsSeeder::class);
 
+        // Seed standard customer debit note reasons
+        $this->call(DebitNoteReasonSeeder::class);
+
         // Seed farmers (20 000 records) — run independently if needed
         // $this->call(FarmerSeeder::class);
 
