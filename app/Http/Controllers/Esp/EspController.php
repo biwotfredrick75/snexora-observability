@@ -354,7 +354,38 @@ class EspController extends Controller
         if ($request->party_type) $q->where('party_type', $request->party_type);
         if ($request->party_id)   $q->where('party_id', $request->party_id);
         if ($request->status)     $q->where('status', $request->status);
-        return ApiResponse::success($q->orderByDesc('id')->limit(200)->get());
+        if ($request->from)       $q->where('sale_date', '>=', $request->from);
+        if ($request->to)         $q->where('sale_date', '<=', $request->to);
+
+        $sales = $q->orderByDesc('id')->limit(300)->get();
+        $this->attachPartyNames($sales);
+
+        return ApiResponse::success($sales);
+    }
+
+    /**
+     * party_id references a different table depending on party_type (no single
+     * FK to hang a relation off) — resolve display names in bulk, one query
+     * per party type present in the result set, instead of N+1.
+     */
+    private function attachPartyNames($sales): void
+    {
+        $farmerIds      = $sales->where('party_type', 'farmer')->pluck('party_id')->unique()->filter();
+        $employeeIds    = $sales->where('party_type', 'employee')->pluck('party_id')->unique()->filter();
+        $transporterIds = $sales->where('party_type', 'transporter')->pluck('party_id')->unique()->filter();
+
+        $farmerNames      = $farmerIds->isEmpty() ? collect() : Farmer::whereIn('id', $farmerIds)->pluck('full_name', 'id');
+        $employeeNames    = $employeeIds->isEmpty() ? collect() : Employee::whereIn('id', $employeeIds)->pluck('full_name', 'id');
+        $transporterNames = $transporterIds->isEmpty() ? collect() : DB::table('inventory_locations')->whereIn('id', $transporterIds)->pluck('name', 'id');
+
+        foreach ($sales as $sale) {
+            $sale->party_name = match ($sale->party_type) {
+                'farmer'      => $farmerNames[$sale->party_id] ?? null,
+                'employee'    => $employeeNames[$sale->party_id] ?? null,
+                'transporter' => $transporterNames[$sale->party_id] ?? null,
+                default       => null,
+            };
+        }
     }
 
     public function showSale(EspSale $sale): JsonResponse
@@ -362,7 +393,9 @@ class EspController extends Controller
         if (($linked = $this->linkedProviderId()) && $sale->esp_id != $linked) {
             return ApiResponse::error('Not your sale.', 403);
         }
-        return ApiResponse::success($sale->load(['esp', 'items', 'adjustments']));
+        $sale->load(['esp', 'items', 'adjustments']);
+        $this->attachPartyNames(collect([$sale]));
+        return ApiResponse::success($sale);
     }
 
     /** PUT /esp/sales/{id} — edit line items while still pending & not yet deducted */
