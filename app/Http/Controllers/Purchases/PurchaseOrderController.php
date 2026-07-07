@@ -550,9 +550,9 @@ class PurchaseOrderController extends Controller
 
         $supplierId = $request->supplier_id;
 
-        // Find received GRNs for this supplier
+        // Find received GRNs for this supplier (direct GRNs and standard POs alike)
         $grnIds = DB::table('purchase_orders')
-            ->where('type', 'grn')
+            ->whereIn('type', ['grn', 'po'])
             ->where('supplier_id', $supplierId)
             ->where('status', 'received')
             ->pluck('id');
