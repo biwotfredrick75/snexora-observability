@@ -100,6 +100,7 @@ use App\Http\Controllers\Purchases\PurchaseRequisitionController;
 use App\Http\Controllers\Purchases\PurchaseOrderController;
 use App\Http\Controllers\Purchases\PurchaseQuotationController;
 use App\Http\Controllers\Purchases\SupplierCreditNoteController;
+use App\Http\Controllers\Purchases\SupplierDebitNoteController;
 use App\Http\Controllers\Purchases\SupplierAllocationController;
 use App\Http\Controllers\Purchases\SupplierImportController;
 use App\Http\Controllers\Purchases\SupplierPurchaseImportController;
@@ -770,6 +771,13 @@ Route::middleware('auth:api')->group(function () {
         Route::post('supplier-credit-notes',                    [SupplierCreditNoteController::class, 'store']);
         Route::get('supplier-credit-notes/{id}/gl',            [SupplierCreditNoteController::class, 'glEntries']);
         Route::get('supplier-credit-notes/{id}',                [SupplierCreditNoteController::class, 'show']);
+
+        // Supplier Debit Notes
+        Route::get('supplier-debit-notes/form-data',            [SupplierDebitNoteController::class, 'formData']);
+        Route::get('supplier-debit-notes',                      [SupplierDebitNoteController::class, 'index']);
+        Route::post('supplier-debit-notes',                     [SupplierDebitNoteController::class, 'store']);
+        Route::get('supplier-debit-notes/{id}/gl',              [SupplierDebitNoteController::class, 'glEntries']);
+        Route::get('supplier-debit-notes/{id}',                 [SupplierDebitNoteController::class, 'show']);
 
         // Supplier Allocations
         Route::get('supplier-allocations',                      [SupplierAllocationController::class, 'index']);
