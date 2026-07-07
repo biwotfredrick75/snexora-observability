@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Setup;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\EspProvider;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -43,6 +44,7 @@ class UserController extends Controller
             'print_profile' => 'nullable|string|max:30',
             'rep_popup'     => 'nullable|boolean',
             'default_store' => 'nullable|string|max:50',
+            'esp_provider_id' => 'nullable|integer|exists:esp_providers,id',
         ]);
 
         $user = User::create([
@@ -64,6 +66,8 @@ class UserController extends Controller
         if (!empty($validated['role'])) {
             $user->syncRoles([$validated['role']]);
         }
+
+        $this->syncEspProviderLink($user, $validated['esp_provider_id'] ?? null);
 
         return ApiResponse::created(
             $this->formatUser($user->fresh('roles')),
@@ -91,7 +95,11 @@ class UserController extends Controller
             'default_store' => 'sometimes|nullable|string|max:50',
             'inactive'      => 'sometimes|boolean',
             'password'      => 'sometimes|nullable|string|min:6',
+            'esp_provider_id' => 'sometimes|nullable|integer|exists:esp_providers,id',
         ]);
+
+        $espProviderId = array_key_exists('esp_provider_id', $validated) ? $validated['esp_provider_id'] : false;
+        unset($validated['esp_provider_id']);
 
         if (!empty($validated['password'])) {
             $validated['password'] = Hash::make($validated['password']);
@@ -115,10 +123,27 @@ class UserController extends Controller
             $user->syncRoles([$role]);
         }
 
+        if ($espProviderId !== false) {
+            $this->syncEspProviderLink($user, $espProviderId);
+        }
+
         return ApiResponse::updated(
             $this->formatUser($user->fresh('roles')),
             'User updated successfully'
         );
+    }
+
+    /**
+     * Points exactly one esp_providers row at this user (the FK lives on
+     * esp_providers.user_id, not users) — clears any prior link first so a
+     * user is never linked to more than one provider.
+     */
+    private function syncEspProviderLink(User $user, ?int $providerId): void
+    {
+        EspProvider::where('user_id', $user->id)->update(['user_id' => null]);
+        if ($providerId) {
+            EspProvider::where('id', $providerId)->update(['user_id' => $user->id]);
+        }
     }
 
     /**
@@ -135,6 +160,8 @@ class UserController extends Controller
 
     private function formatUser(User $user): array
     {
+        $espProvider = EspProvider::where('user_id', $user->id)->first(['id', 'name', 'esp_code']);
+
         return [
             'id'            => $user->id,
             'user_id'       => $user->user_id,
@@ -150,6 +177,8 @@ class UserController extends Controller
             'inactive'      => (bool) $user->inactive,
             'last_visit_date' => $user->last_visit_date?->format('d/m/Y'),
             'joined'        => $user->created_at?->format('d/m/Y'),
+            'esp_provider_id'   => $espProvider?->id,
+            'esp_provider_name' => $espProvider ? "{$espProvider->name} ({$espProvider->esp_code})" : null,
         ];
     }
 }
