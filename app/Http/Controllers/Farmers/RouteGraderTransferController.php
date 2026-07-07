@@ -67,7 +67,7 @@ class RouteGraderTransferController extends Controller
                 'mpi.total_price   as total_price',
             ])
             ->orderBy('mp.invoice_date')
-            ->orderBy('il.name')
+            ->orderBy('mp.id')
             ->orderBy('f.full_name')
             ->limit(500)
             ->get();
