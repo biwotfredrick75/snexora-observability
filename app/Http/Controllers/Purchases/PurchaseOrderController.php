@@ -371,7 +371,7 @@ class PurchaseOrderController extends Controller
         foreach ($po->items as $idx => $item) {
             $qty  = (float) $item->qty;
             $cost = (float) $item->price_before_tax;
-            $lineAmount = round($qty * $cost, 4);
+            $lineAmount = round($qty * $cost - (float) $item->discount_amt, 4);
 
             // Batch number uniquely identifies this GRN line: {po_no}-{1-based line}
             $batchNo = substr($po->po_no . '-' . ($idx + 1), 0, 50);
