@@ -8,6 +8,7 @@ use App\Models\Supplier;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class SupplierController extends Controller
@@ -46,7 +47,6 @@ class SupplierController extends Controller
             // Core
             'supplierName'           => 'required|string|max:60',
             'supplierReference'      => 'required|string|max:100|unique:suppliers,supplierReference',
-            'memberNumber'           => 'nullable|string|max:200|unique:suppliers,memberNumber',
             'supplierType'           => 'nullable|string|max:200',
             'contactPerson'          => 'nullable|string|max:60',
             'gender'                 => 'nullable|string|max:200',
@@ -90,7 +90,6 @@ class SupplierController extends Controller
         ]);
 
         // Defaults for required non-nullable columns
-        $data['memberNumber']        = $data['memberNumber']    ?? $data['supplierReference'];
         $data['currencyCode']        = $data['currencyCode']    ?? 'KES';
         $data['supplierType']        = $data['supplierType']    ?? 'Normal';
         $data['routeGroupId']        = $data['routeGroupId']    ?? 0;
@@ -113,7 +112,10 @@ class SupplierController extends Controller
         $data['isVendor']            = true;
 
         try {
-            $supplier = Supplier::create($data);
+            $supplier = DB::transaction(function () use ($data) {
+                $data['memberNumber'] = $this->nextMemberNumber();
+                return Supplier::create($data);
+            });
         } catch (QueryException $e) {
             Log::error('Supplier creation failed: ' . $e->getMessage());
             return ApiResponse::error(
@@ -211,5 +213,22 @@ class SupplierController extends Controller
         $supplier = Supplier::findOrFail($id);
         $supplier->update(['inactive' => true]);
         return ApiResponse::deleted('Supplier deactivated');
+    }
+
+    /**
+     * Next sequential MBR##### number. Legacy bulk-imported rows use
+     * MBR<supplierReference> (e.g. MBRFRM030000) which the '^MBR[0-9]+$'
+     * pattern deliberately excludes, so this counter starts clean at
+     * MBR00001 regardless of how many legacy rows exist.
+     */
+    private function nextMemberNumber(): string
+    {
+        $last = DB::table('suppliers')
+            ->selectRaw("MAX(CAST(SUBSTRING(memberNumber, 4) AS UNSIGNED)) AS n")
+            ->whereRaw("memberNumber REGEXP '^MBR[0-9]+$'")
+            ->lockForUpdate()
+            ->value('n') ?? 0;
+
+        return 'MBR' . str_pad($last + 1, 5, '0', STR_PAD_LEFT);
     }
 }
