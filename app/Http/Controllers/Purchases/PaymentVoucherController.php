@@ -379,6 +379,19 @@ class PaymentVoucherController extends Controller
                 // as a supplier advance rather than blocking the post.
                 $advanceAmount = round($gross - $allocatedTotal, 2);
 
+                // Each row can't absorb more than its own outstanding balance —
+                // the total matching the voucher gross isn't enough on its own,
+                // since that lets one row silently soak up another's shortfall.
+                foreach ($request->allocations as $alloc) {
+                    $maxAllocatable = $this->maxAllocatable($alloc['transaction_type'], $alloc['transaction_id']);
+                    if (round((float) $alloc['this_allocation'], 2) > round($maxAllocatable, 2) + 0.01) {
+                        DB::rollBack();
+                        return ApiResponse::validationError([
+                            'allocations' => "Allocation of {$alloc['this_allocation']} for {$alloc['transaction_type']} #{$alloc['transaction_id']} exceeds its outstanding balance ({$maxAllocatable})",
+                        ]);
+                    }
+                }
+
                 foreach ($request->allocations as $alloc) {
                     PaymentVoucherAllocation::create([
                         'payment_voucher_id' => $voucher->id,
@@ -498,6 +511,27 @@ class PaymentVoucherController extends Controller
         return $voucher->withholdingTax?->gl_account
             ?: GlSetting::first()?->tax_deduction_account
             ?: (GlSetting::first()?->payable_account ?: '201010');
+    }
+
+    /**
+     * How much of a given open transaction is still unallocated — mirrors the
+     * per-row left_to_allocate computation in openTransactions(), recomputed
+     * server-side so a client can't post an allocation larger than what's
+     * actually still owed on that specific invoice/GRN/credit note.
+     */
+    private function maxAllocatable(string $transactionType, int $transactionId): float
+    {
+        $alreadyAllocated = (float) PaymentVoucherAllocation::where('transaction_type', $transactionType)
+            ->where('transaction_id', $transactionId)
+            ->sum('this_allocation');
+
+        if ($transactionType === 'Credit Note') {
+            $total = (float) DB::table('supplier_credit_notes')->where('id', $transactionId)->value('total');
+        } else {
+            $total = (float) DB::table('purchase_orders')->where('id', $transactionId)->value('amount_total');
+        }
+
+        return max(0, $total - $alreadyAllocated);
     }
 
     /**
