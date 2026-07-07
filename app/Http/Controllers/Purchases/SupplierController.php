@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Purchases;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\Supplier;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class SupplierController extends Controller
 {
@@ -94,6 +96,8 @@ class SupplierController extends Controller
         $data['routeGroupId']        = $data['routeGroupId']    ?? 0;
         $data['supplierAddress']     = $data['supplierAddress'] ?? $data['address'] ?? '';
         $data['address']             = $data['address']         ?? '';
+        $data['contactPerson']       = $data['contactPerson']   ?? '';
+        $data['notes']               = $data['notes']           ?? '';
         $data['gender']              = $data['gender']          ?? '';
         $data['dateOfBirth']         = $data['dateOfBirth']     ?? '2000-01-01';
         $data['idNumber']            = $data['idNumber']        ?? '';
@@ -108,7 +112,15 @@ class SupplierController extends Controller
         $data['balanceMessageDate']  = $data['balanceMessageDate']  ?? now()->toDateString();
         $data['isVendor']            = true;
 
-        $supplier = Supplier::create($data);
+        try {
+            $supplier = Supplier::create($data);
+        } catch (QueryException $e) {
+            Log::error('Supplier creation failed: ' . $e->getMessage());
+            return ApiResponse::error(
+                'Could not save the supplier — one of the fields has an invalid or missing value. Please review the form and try again.',
+                422
+            );
+        }
 
         return ApiResponse::created($supplier, 'Supplier created');
     }
@@ -172,8 +184,24 @@ class SupplierController extends Controller
         if (isset($data['address']) && !isset($data['supplierAddress'])) {
             $data['supplierAddress'] = $data['address'];
         }
+        // contactPerson/notes are NOT NULL at the DB level (contactPerson has a
+        // '' default, notes has none at all) — an explicit null here (empty
+        // field submitted) would still violate that.
+        foreach (['contactPerson', 'notes'] as $col) {
+            if (array_key_exists($col, $data) && $data[$col] === null) {
+                $data[$col] = '';
+            }
+        }
 
-        $supplier->update($data);
+        try {
+            $supplier->update($data);
+        } catch (QueryException $e) {
+            Log::error('Supplier update failed: ' . $e->getMessage());
+            return ApiResponse::error(
+                'Could not save the supplier — one of the fields has an invalid or missing value. Please review the form and try again.',
+                422
+            );
+        }
 
         return ApiResponse::updated($supplier, 'Supplier updated');
     }
