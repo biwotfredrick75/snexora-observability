@@ -249,8 +249,8 @@ class PaymentVoucherController extends Controller
         $bankAccount = null;
         if ($voucher->bank_account_code) {
             $bankAccount = DB::table('gl_accounts')
-                ->where('account_code', $voucher->bank_account_code)
-                ->select('account_code', 'account_name')
+                ->where('code', $voucher->bank_account_code)
+                ->select('code as account_code', 'name as account_name')
                 ->first();
         }
 
@@ -267,14 +267,13 @@ class PaymentVoucherController extends Controller
     {
         $voucher = PaymentVoucher::with(['supplier', 'allocations'])->findOrFail($id);
 
-        $transNo = 'PV-' . $id;
-
         $glEntries = DB::table('gld_transactions as g')
-            ->leftJoin('gl_accounts as a', 'a.account_code', '=', 'g.account_code')
-            ->where('g.trans_no', $transNo)
+            ->leftJoin('gl_accounts as a', 'a.code', '=', 'g.account_code')
+            ->where('g.trans_no', $id)
+            ->where('g.type', 22)
             ->select(
                 'g.account_code',
-                'a.account_name',
+                'a.name as account_name',
                 'g.narration as memo',
                 DB::raw('CASE WHEN g.amount >= 0 THEN g.amount ELSE 0 END as debit'),
                 DB::raw('CASE WHEN g.amount < 0 THEN ABS(g.amount) ELSE 0 END as credit'),
@@ -364,16 +363,21 @@ class PaymentVoucherController extends Controller
 
         DB::beginTransaction();
         try {
+            $advanceAmount = 0;
             if ($voucher->allocations->isEmpty() && $request->filled('allocations')) {
                 $gross = round((float) $voucher->amount + (float) $voucher->withholding_tax_amount, 2);
                 $allocatedTotal = round(collect($request->allocations)->sum('this_allocation'), 2);
 
-                if ($allocatedTotal !== $gross) {
+                if ($allocatedTotal > $gross) {
                     DB::rollBack();
                     return ApiResponse::validationError([
-                        'allocations' => "Allocated total ({$allocatedTotal}) must equal the voucher's gross amount ({$gross})",
+                        'allocations' => "Allocated total ({$allocatedTotal}) cannot exceed the voucher's gross amount ({$gross})",
                     ]);
                 }
+
+                // Any unallocated remainder is paid ahead of an invoice — parked
+                // as a supplier advance rather than blocking the post.
+                $advanceAmount = round($gross - $allocatedTotal, 2);
 
                 foreach ($request->allocations as $alloc) {
                     PaymentVoucherAllocation::create([
@@ -415,6 +419,23 @@ class PaymentVoucherController extends Controller
                     'reference'   => $voucher->pvn_no,
                     'narration'   => 'Supplier payment allocation - ' . $alloc->transaction_type . ' #' . $alloc->transaction_id,
                     'amount'      => $alloc->this_allocation, // debit
+                    'created_by'  => Auth::id(),
+                ]);
+            }
+
+            // DR Supplier Advance — unallocated remainder, paid ahead of any
+            // recorded invoice. Keeps the batch balanced without forcing 100%
+            // allocation against existing open transactions.
+            if ($advanceAmount > 0) {
+                $advanceAccount = GlSetting::first()?->supplier_advance_account ?: '104021';
+                GldTransaction::create([
+                    'trans_no'    => $voucher->id,
+                    'type'        => $glType,
+                    'tran_date'   => $voucher->date_paid,
+                    'account_code'=> $advanceAccount,
+                    'reference'   => $voucher->pvn_no,
+                    'narration'   => 'Supplier advance - ' . $voucher->pvn_no . ' (' . ($voucher->supplier->supplierName ?? 'supplier') . ')',
+                    'amount'      => $advanceAmount, // debit
                     'created_by'  => Auth::id(),
                 ]);
             }
