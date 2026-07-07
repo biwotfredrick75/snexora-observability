@@ -90,17 +90,20 @@ class PaymentVoucherController extends Controller
             ->get();
         $rows = $rows->concat($creditNotes);
 
-        // Supplier invoices and direct GRNs
+        // Supplier invoices only — a GRN isn't a payable on its own, it's just
+        // the goods receipt; the supplier's actual bill is the invoice raised
+        // against it (via "Create Invoice from this GRN"), so only that should
+        // ever be payable/allocatable here.
         $invoices = DB::table('purchase_orders as po')
             ->where('po.supplier_id', $supplierId)
-            ->whereIn('po.type', ['grn', 'invoice'])
+            ->where('po.type', 'invoice')
             ->whereIn('po.status', ['received', 'ceo_approved'])
             ->leftJoin('payment_voucher_allocations as pva', function ($j) {
                 $j->on('pva.transaction_id', '=', 'po.id')
-                  ->whereIn('pva.transaction_type', ['Supplier Invoice', 'GRN Receipt']);
+                  ->where('pva.transaction_type', 'Supplier Invoice');
             })
             ->select(
-                DB::raw("CASE po.type WHEN 'grn' THEN 'GRN Receipt' ELSE 'Supplier Invoice' END as transaction_type"),
+                DB::raw("'Supplier Invoice' as transaction_type"),
                 'po.id',
                 'po.po_no as supplier_ref',
                 DB::raw('po.order_date as date'),
@@ -127,9 +130,13 @@ class PaymentVoucherController extends Controller
     {
         $request->validate(['supplier_id' => 'required|integer']);
 
+        // Any unposted voucher is available for allocation here — post() itself
+        // already accepts draft/payables_approved/finance_approved/ceo_approved,
+        // so restricting the dropdown to ceo_approved only hid vouchers that
+        // were otherwise perfectly postable.
         $vouchers = PaymentVoucher::with('supplier')
             ->where('supplier_id', $request->supplier_id)
-            ->where('status', 'ceo_approved')
+            ->whereIn('status', ['draft', 'payables_approved', 'finance_approved', 'ceo_approved'])
             ->orderBy('date_paid')
             ->get()
             ->map(fn($v) => [
