@@ -318,27 +318,53 @@ class MilkPurchaseController extends Controller
     }
 
     // ── Bulk approve ──────────────────────────────────────────────────────────
-    // Publishes to Kafka; the Go approval service consumes, processes, and
-    // POSTs the result back via /api/internal/bulk-approval-result, which
-    // then broadcasts via Reverb → frontend.
+    // Previously published to Kafka for an external Go approval service to
+    // consume — that service/broker was never deployed to this environment
+    // (no consumer, no REST proxy reachable), so every bulk approval failed
+    // with a connection error and nothing was ever actually approved. Posts
+    // each purchase synchronously through the same approvalService used by
+    // the single approve() endpoint instead.
     public function bulkApprove(Request $request): JsonResponse
     {
         $request->validate(['ids' => 'required|array|min:1', 'ids.*' => 'integer']);
 
-        $user      = auth()->user()?->user_id ?? '';
-        $count     = count($request->ids);
-        $requestId = (string) \Illuminate\Support\Str::uuid();
+        $user = auth()->user()?->user_id ?? '';
 
-        (new KafkaProducer())->publish('milk.purchase.approve', [
-            'request_id'  => $requestId,
-            'ids'         => $request->ids,
-            'approved_by' => $user,
-        ], $requestId);
+        $purchases = MilkPurchase::whereIn('id', $request->ids)
+            ->where('status', 'submitted')
+            ->get();
 
-        return ApiResponse::success(
-            ['queued' => $count, 'request_id' => $requestId],
-            "Processing {$count} purchase(s) — you will be notified when done"
-        );
+        $approved = 0;
+        $failed   = [];
+
+        foreach ($purchases as $purchase) {
+            DB::beginTransaction();
+            try {
+                $this->approvalService->postApproval($purchase, $user);
+                DB::commit();
+                $approved++;
+            } catch (\Throwable $e) {
+                DB::rollBack();
+                $failed[] = ['id' => $purchase->id, 'error' => $e->getMessage()];
+            }
+        }
+
+        $message = "{$approved} purchase(s) approved";
+        if (!empty($failed)) {
+            $message .= ' — ' . count($failed) . ' failed';
+        }
+
+        try {
+            broadcast(new DashboardEvent('milk_purchase', 'bulk_approved', [
+                'approved' => $approved,
+                'failed'   => count($failed),
+                'message'  => $message,
+            ]));
+        } catch (\Throwable $e) {
+            \Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
+
+        return ApiResponse::success(['approved' => $approved, 'failed' => $failed], $message);
     }
 
     // ── Bulk reject ───────────────────────────────────────────────────────────
