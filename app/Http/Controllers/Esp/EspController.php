@@ -54,6 +54,7 @@ class EspController extends Controller
     {
         $data = $request->validate([
             'esp_code'        => 'required|string|max:20|unique:esp_providers,esp_code',
+            'user_id'         => 'nullable|integer|exists:users,id|unique:esp_providers,user_id',
             'name'            => 'required|string|max:150',
             'contact_person'  => 'nullable|string|max:100',
             'phone'           => 'nullable|string|max:30',
@@ -82,6 +83,7 @@ class EspController extends Controller
     public function updateProvider(Request $request, EspProvider $provider): JsonResponse
     {
         $data = $request->validate([
+            'user_id'         => 'nullable|integer|exists:users,id|unique:esp_providers,user_id,' . $provider->id,
             'name'            => 'sometimes|string|max:150',
             'contact_person'  => 'nullable|string|max:100',
             'phone'           => 'nullable|string|max:30',
@@ -252,11 +254,28 @@ class EspController extends Controller
         return ApiResponse::success($q->orderBy('name')->limit(50)->get(['id', 'code', 'name']));
     }
 
-    /** POST /esp/sales — generalized create for any party type, server-enforced credit limit */
+    /**
+     * The ESP provider linked to the current login, if any. Agrovet/service-
+     * provider accounts record their OWN sales — an unlinked user (staff,
+     * grader with no agrovet account) gets null and is denied write access.
+     */
+    private function linkedProviderId(): ?int
+    {
+        return EspProvider::where('user_id', auth()->id())->value('id');
+    }
+
+    /** POST /esp/sales — the logged-in agrovet/service-provider records a sale */
     public function storeSale(Request $request): JsonResponse
     {
+        $linkedProviderId = $this->linkedProviderId();
+        if (! $linkedProviderId) {
+            return ApiResponse::error(
+                'Your login is not linked to an agrovet/service-provider account. Ask an admin to link it.',
+                403
+            );
+        }
+
         $data = $request->validate([
-            'esp_id'        => 'required|exists:esp_providers,id',
             'party_type'    => 'required|in:farmer,employee,transporter',
             'party_id'      => 'required|integer|min:1',
             'sale_date'     => 'required|date',
@@ -266,6 +285,8 @@ class EspController extends Controller
             'items.*.qty'         => 'required|numeric|min:0.001',
             'items.*.unit_price'  => 'required|numeric|min:0',
         ]);
+        // esp_id is never taken from the client — always the caller's own linked provider.
+        $data['esp_id'] = $linkedProviderId;
 
         $total = collect($data['items'])->sum(fn ($i) => $i['qty'] * $i['unit_price']);
 
@@ -315,11 +336,21 @@ class EspController extends Controller
         });
     }
 
-    /** GET /esp/sales?party_type=&party_id=&esp_id=&status= */
+    /**
+     * GET /esp/sales?party_type=&party_id=&esp_id=&status=
+     * A linked agrovet account only ever sees its own sales, regardless of
+     * the esp_id query param — staff/admin (no link) can query any provider.
+     */
     public function indexSales(Request $request): JsonResponse
     {
+        $linkedProviderId = $this->linkedProviderId();
+
         $q = EspSale::with(['esp:id,name,esp_code']);
-        if ($request->esp_id)     $q->where('esp_id', $request->esp_id);
+        if ($linkedProviderId) {
+            $q->where('esp_id', $linkedProviderId);
+        } elseif ($request->esp_id) {
+            $q->where('esp_id', $request->esp_id);
+        }
         if ($request->party_type) $q->where('party_type', $request->party_type);
         if ($request->party_id)   $q->where('party_id', $request->party_id);
         if ($request->status)     $q->where('status', $request->status);
@@ -328,12 +359,18 @@ class EspController extends Controller
 
     public function showSale(EspSale $sale): JsonResponse
     {
+        if (($linked = $this->linkedProviderId()) && $sale->esp_id != $linked) {
+            return ApiResponse::error('Not your sale.', 403);
+        }
         return ApiResponse::success($sale->load(['esp', 'items', 'adjustments']));
     }
 
     /** PUT /esp/sales/{id} — edit line items while still pending & not yet deducted */
     public function updateSale(Request $request, EspSale $sale): JsonResponse
     {
+        if (($linked = $this->linkedProviderId()) && $sale->esp_id != $linked) {
+            return ApiResponse::error('Not your sale.', 403);
+        }
         if ($sale->party_deducted) {
             return ApiResponse::error('Cannot edit — already deducted from the party\'s pay. Raise an adjustment instead.', 422);
         }
@@ -393,6 +430,9 @@ class EspController extends Controller
     /** POST /esp/sales/{id}/void — void a pending, undeducted sale */
     public function voidSale(EspSale $sale): JsonResponse
     {
+        if (($linked = $this->linkedProviderId()) && $sale->esp_id != $linked) {
+            return ApiResponse::error('Not your sale.', 403);
+        }
         if ($sale->party_deducted) {
             return ApiResponse::error('Cannot void — already deducted from the party\'s pay. Raise an adjustment instead.', 422);
         }
@@ -404,6 +444,9 @@ class EspController extends Controller
     /** POST /esp/sales/{id}/adjust — append-only correction after the fact */
     public function adjustSale(Request $request, EspSale $sale): JsonResponse
     {
+        if (($linked = $this->linkedProviderId()) && $sale->esp_id != $linked) {
+            return ApiResponse::error('Not your sale.', 403);
+        }
         if ($sale->status === 'void') {
             return ApiResponse::error('Cannot adjust a voided sale', 422);
         }

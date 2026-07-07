@@ -63,6 +63,10 @@ class GraderAuthController extends Controller
                 ->get(['id', 'farmer_no', 'full_name', 'short_name', 'phone', 'status']);
         }
 
+        // If this login is linked to an ESP (agrovet/service-provider) account,
+        // the app locks the ESP sale screen to this provider — see EspController::linkedProviderId().
+        $espProvider = \App\Models\EspProvider::where('user_id', $user->id)->first(['id', 'name', 'esp_code']);
+
         return ApiResponse::success([
             'token' => $token,
             'grader' => [
@@ -73,8 +77,9 @@ class GraderAuthController extends Controller
                 'name'          => $user->real_name,
                 'roles'         => $user->getRoleNames(),
             ],
-            'route'   => $route,
-            'farmers' => $farmers,
+            'route'        => $route,
+            'farmers'      => $farmers,
+            'esp_provider' => $espProvider,
         ], 'Grader login successful');
     }
 
