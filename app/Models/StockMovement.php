@@ -15,6 +15,8 @@ class StockMovement extends Model
     const TYPE_DELIVERY    = 26;
     const TYPE_INVOICE     = 10;  // direct sales invoice GL posting
     const TYPE_CREDIT_NOTE = 11;  // credit note (reversal of invoice)
+    const TYPE_DEBIT_NOTE  = 12;  // customer debit note (supplementary charge — increases receivable)
+    const TYPE_SUPPLIER_DEBIT_NOTE = 27; // supplier debit note (increases payable)
 
     protected $table      = 'stock_movements';
     protected $primaryKey = 'trans_id';

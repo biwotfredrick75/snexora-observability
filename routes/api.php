@@ -692,6 +692,11 @@ Route::middleware('auth:api')->group(function () {
         Route::put('credit-note-reasons/{id}',     [CreditNoteReasonController::class, 'update']);
         Route::delete('credit-note-reasons/{id}',  [CreditNoteReasonController::class, 'destroy']);
 
+        Route::get('debit-note-reasons',          [\App\Http\Controllers\Sales\DebitNoteReasonController::class, 'index']);
+        Route::post('debit-note-reasons',         [\App\Http\Controllers\Sales\DebitNoteReasonController::class, 'store']);
+        Route::put('debit-note-reasons/{id}',     [\App\Http\Controllers\Sales\DebitNoteReasonController::class, 'update']);
+        Route::delete('debit-note-reasons/{id}',  [\App\Http\Controllers\Sales\DebitNoteReasonController::class, 'destroy']);
+
         Route::get('credit-statuses',          [CreditStatusController::class, 'index']);
         Route::post('credit-statuses',         [CreditStatusController::class, 'store']);
         Route::put('credit-statuses/{id}',     [CreditStatusController::class, 'update']);
@@ -923,6 +928,16 @@ Route::middleware('auth:api')->group(function () {
     Route::post('sales/credit-notes/{id}/stamp',               [CreditNoteController::class, 'stamp']);
     Route::post('sales/credit-notes/{id}/cancel',              [CreditNoteController::class, 'cancel']);
     Route::post('sales/credit-notes/{id}/allocate-manual',     [CreditNoteController::class, 'allocateManual']);
+
+    // Debit Notes
+    Route::get('sales/debit-notes/next-ref',   [\App\Http\Controllers\Sales\DebitNoteController::class, 'nextRef']);
+    Route::get('sales/debit-notes/form-data',  [\App\Http\Controllers\Sales\DebitNoteController::class, 'formData']);
+    Route::get('sales/debit-notes',            [\App\Http\Controllers\Sales\DebitNoteController::class, 'index']);
+    Route::post('sales/debit-notes',           [\App\Http\Controllers\Sales\DebitNoteController::class, 'store']);
+    Route::get('sales/debit-notes/{id}',       [\App\Http\Controllers\Sales\DebitNoteController::class, 'show']);
+    Route::put('sales/debit-notes/{id}',       [\App\Http\Controllers\Sales\DebitNoteController::class, 'update']);
+    Route::post('sales/debit-notes/{id}/place',  [\App\Http\Controllers\Sales\DebitNoteController::class, 'place']);
+    Route::post('sales/debit-notes/{id}/cancel', [\App\Http\Controllers\Sales\DebitNoteController::class, 'cancel']);
 
     Route::get('sales/customer-payments/unpaid-invoices',  [CustomerPaymentController::class, 'unpaidInvoices']);
     Route::get('sales/customer-payments/unallocated',      [CustomerPaymentController::class, 'unallocated']);
