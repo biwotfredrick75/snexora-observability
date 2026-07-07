@@ -112,6 +112,29 @@ class PayrollGenerationService
             $autoDeductions += $amount;
         }
 
+        // External agrovet/service-provider (ESP) sales not yet deducted from this employee.
+        // Posted via its own (deliberately inactive — see espDeductionComponent()) pay
+        // component so it doesn't get double-picked-up by the activeComponents() loop above.
+        $espComponent  = $this->espDeductionComponent();
+        $espDeduction  = round((float) DB::table('esp_farmer_sales')
+            ->where('party_type', 'employee')
+            ->where('party_id', $employee->id)
+            ->where('party_deducted', false)
+            ->where('status', '!=', 'void')
+            ->sum('total_amount'), 2);
+
+        if ($espDeduction > 0) {
+            PayrollPosting::updateOrCreate(
+                ['payroll_period_id' => $period->id, 'employee_id' => $employee->id, 'component_id' => $espComponent->id],
+                ['amount' => $espDeduction, 'is_auto' => true]
+            );
+        } else {
+            PayrollPosting::where([
+                'payroll_period_id' => $period->id, 'employee_id' => $employee->id, 'component_id' => $espComponent->id,
+            ])->delete();
+        }
+        $autoDeductions += $espDeduction;
+
         $otherDeductions = round($autoDeductions, 2);
         $statutoryTotal  = round($statutory['paye'] + $statutory['shif'] + $statutory['nssf'] + $statutory['housing_levy'], 2);
         $netPay          = round($grossPay - $statutoryTotal - $otherDeductions - $manualDeductions, 2);
@@ -166,6 +189,22 @@ class PayrollGenerationService
         if (array_key_exists($key, $this->componentCache)) return $this->componentCache[$key];
 
         return $this->componentCache[$key] = PayrollPayComponent::where('computation_type', $computationType)->first();
+    }
+
+    /**
+     * Deliberately `active = false` — its amount is looked up per-employee from
+     * unsettled ESP sales, not from `default_amount`/`percentage`, so it must be
+     * excluded from the generic activeComponents('deduction') auto-loop above.
+     */
+    private function espDeductionComponent(): PayrollPayComponent
+    {
+        if (isset($this->componentCache['esp_deduction'])) return $this->componentCache['esp_deduction'];
+
+        return $this->componentCache['esp_deduction'] = PayrollPayComponent::firstOrCreate(
+            ['name' => 'External Provider Purchases'],
+            ['category' => 'deduction', 'computation_type' => 'fixed', 'default_amount' => 0,
+             'is_statutory' => false, 'active' => false, 'sort_order' => 900]
+        );
     }
 
     private function componentAmount(PayrollPayComponent $component, float $basicSalary): float
@@ -270,9 +309,51 @@ class PayrollGenerationService
             ]);
 
             $period->update(['status' => 'posted', 'posted_by' => $userId, 'posted_at' => now()]);
+
+            $this->markEspSalesDeducted($period);
         });
 
         return $period->fresh();
+    }
+
+    /**
+     * Mark, per employee, the oldest not-yet-deducted ESP sales up to the amount
+     * that was posted for the "External Provider Purchases" component in this
+     * period — mirrors the oldest-first settlement pattern used elsewhere (see
+     * EspController::postSettlement) and deliberately excludes any ESP sale
+     * recorded after generate() ran (it will simply be picked up next period).
+     */
+    private function markEspSalesDeducted(PayrollPeriod $period): void
+    {
+        $component = $this->espDeductionComponent();
+        $tranDate  = $period->period_end->toDateString();
+
+        $postings = PayrollPosting::where('payroll_period_id', $period->id)
+            ->where('component_id', $component->id)
+            ->where('amount', '>', 0)
+            ->get(['employee_id', 'amount']);
+
+        foreach ($postings as $posting) {
+            $remaining = (float) $posting->amount;
+            $sales = DB::table('esp_farmer_sales')
+                ->where('party_type', 'employee')
+                ->where('party_id', $posting->employee_id)
+                ->where('party_deducted', false)
+                ->where('status', '!=', 'void')
+                ->orderBy('id')
+                ->get(['id', 'total_amount']);
+
+            foreach ($sales as $sale) {
+                if ($remaining <= 0.005) break;
+                DB::table('esp_farmer_sales')->where('id', $sale->id)->update([
+                    'party_deducted'     => true,
+                    'party_deducted_at'  => $tranDate,
+                    'party_deducted_ref' => $period->ref_no,
+                    'updated_at'         => now(),
+                ]);
+                $remaining -= (float) $sale->total_amount;
+            }
+        }
     }
 
     private function resolveComponentAccount(string $computationType, string $fallback): string

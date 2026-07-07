@@ -30,5 +30,6 @@ class AppModuleConfig extends Model
         ['module_id' => 'sales_management', 'label' => 'Sales Management',  'description' => 'Sales data analysis and reporting'],
         ['module_id' => 'analytics',        'label' => 'Analytics',         'description' => 'Business analytics and performance metrics'],
         ['module_id' => 'quality',          'label' => 'Quality Control',   'description' => 'Product quality assurance and control'],
+        ['module_id' => 'esp',              'label' => 'Agrovets & Services','description' => 'Invoice farmers, employees and transporters for external agrovet/service-provider purchases'],
     ];
 }

@@ -16,9 +16,9 @@ class EspProvider extends Model
 
     protected $casts = ['credit_limit_pct' => 'decimal:2'];
 
-    public function farmerSales(): HasMany
+    public function sales(): HasMany
     {
-        return $this->hasMany(EspFarmerSale::class, 'esp_id');
+        return $this->hasMany(EspSale::class, 'esp_id');
     }
 
     public function companyPurchases(): HasMany

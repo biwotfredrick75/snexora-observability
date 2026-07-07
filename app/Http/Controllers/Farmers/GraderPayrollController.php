@@ -112,6 +112,17 @@ class GraderPayrollController extends Controller
             ->groupBy('grader_id')
             ->pluck('advance_total', 'grader_id');
 
+        // ── External agrovet/service-provider (ESP) sales not yet deducted ────
+        // "transporter" party = the grader (they're the ones who haul the milk).
+        $espMap = DB::table('esp_farmer_sales')
+            ->where('party_type', 'transporter')
+            ->whereIn('party_id', $graderIds)
+            ->where('party_deducted', false)
+            ->where('status', '!=', 'void')
+            ->selectRaw('party_id AS grader_id, SUM(total_amount) AS esp_total')
+            ->groupBy('party_id')
+            ->pluck('esp_total', 'grader_id');
+
         // ── Aggregate per grader ──────────────────────────────────────────────
         $graderMap = [];
 
@@ -149,36 +160,39 @@ class GraderPayrollController extends Controller
             ];
         }
 
-        // ── Build final rows with advance & balance ───────────────────────────
-        $graders = collect(array_values($graderMap))->map(function ($g) use ($advancesMap) {
+        // ── Build final rows with advance, ESP deduction & balance ────────────
+        $graders = collect(array_values($graderMap))->map(function ($g) use ($advancesMap, $espMap) {
             $gross   = round($g['gross_pay'], 2);
             $advance = round((float) ($advancesMap[$g['grader_id']] ?? 0), 2);
-            $net     = max(0.0, round($gross - $advance, 2));
-            // Balance = advance that couldn't be recovered this period (informational only)
-            $balance = round(max(0.0, $advance - $gross), 2);
+            $esp     = round((float) ($espMap[$g['grader_id']] ?? 0), 2);
+            $net     = max(0.0, round($gross - $advance - $esp, 2));
+            // Balance = advance/ESP amount that couldn't be recovered this period (informational only)
+            $balance = round(max(0.0, ($advance + $esp) - $gross), 2);
 
             return [
-                'grader_id'    => $g['grader_id'],
-                'grader_code'  => $g['grader_code'],
-                'grader_name'  => $g['grader_name'],
-                'farmer_count' => $g['farmer_count'],
-                'total_qty'    => round($g['total_qty'], 3),
-                'segments'     => $g['segments'],
-                'gross_pay'    => $gross,
-                'advance'      => $advance,
-                'balance'      => $balance,
-                'net_payable'  => $net,
+                'grader_id'        => $g['grader_id'],
+                'grader_code'      => $g['grader_code'],
+                'grader_name'      => $g['grader_name'],
+                'farmer_count'     => $g['farmer_count'],
+                'total_qty'        => round($g['total_qty'], 3),
+                'segments'         => $g['segments'],
+                'gross_pay'        => $gross,
+                'advance'          => $advance,
+                'esp_deduction'    => $esp,
+                'balance'          => $balance,
+                'net_payable'      => $net,
             ];
         });
 
         $totals = [
-            'grader_count'  => $graders->count(),
-            'farmer_count'  => $graders->sum('farmer_count'),
-            'total_qty'     => round($graders->sum('total_qty'), 3),
-            'gross_pay'     => round($graders->sum('gross_pay'), 2),
-            'total_advance' => round($graders->sum('advance'), 2),
-            'total_balance' => round($graders->sum('balance'), 2),
-            'net_payable'   => round($graders->sum('net_payable'), 2),
+            'grader_count'    => $graders->count(),
+            'farmer_count'    => $graders->sum('farmer_count'),
+            'total_qty'       => round($graders->sum('total_qty'), 3),
+            'gross_pay'       => round($graders->sum('gross_pay'), 2),
+            'total_advance'   => round($graders->sum('advance'), 2),
+            'total_esp'       => round($graders->sum('esp_deduction'), 2),
+            'total_balance'   => round($graders->sum('balance'), 2),
+            'net_payable'     => round($graders->sum('net_payable'), 2),
         ];
 
         return ApiResponse::success([
@@ -187,6 +201,54 @@ class GraderPayrollController extends Controller
             'month'   => $month,
             'year'    => $year,
         ], 'Grader payroll processed');
+    }
+
+    // ── Confirm processing: mark this period's ESP deductions as settled ──────
+    //  POST { month, year, grader_id? } — mirrors process(), but persists the
+    //  ESP-sale deduction so it isn't pulled into a future period's net_payable.
+    //  (Advances have no equivalent "confirm" step today — out of scope here.)
+    public function settle(Request $request): JsonResponse
+    {
+        $request->validate([
+            'month'     => 'required|integer|between:1,12',
+            'year'      => 'required|integer|min:2000|max:2100',
+            'grader_id' => 'nullable|integer|exists:inventory_locations,id',
+        ]);
+
+        $result = $this->process($request);
+        $data   = json_decode($result->getContent(), true)['data'] ?? [];
+        $graders = $data['graders'] ?? [];
+
+        $datePaid = now()->toDateString();
+        $ref      = sprintf('GRPAY-%04d-%02d', (int) $request->year, (int) $request->month);
+
+        DB::transaction(function () use ($graders, $datePaid, $ref) {
+            foreach ($graders as $g) {
+                if (($g['esp_deduction'] ?? 0) <= 0) continue;
+
+                $remaining = (float) $g['esp_deduction'];
+                $sales = DB::table('esp_farmer_sales')
+                    ->where('party_type', 'transporter')
+                    ->where('party_id', $g['grader_id'])
+                    ->where('party_deducted', false)
+                    ->where('status', '!=', 'void')
+                    ->orderBy('id')
+                    ->get(['id', 'total_amount']);
+
+                foreach ($sales as $sale) {
+                    if ($remaining <= 0.005) break;
+                    DB::table('esp_farmer_sales')->where('id', $sale->id)->update([
+                        'party_deducted'     => true,
+                        'party_deducted_at'  => $datePaid,
+                        'party_deducted_ref' => $ref,
+                        'updated_at'         => now(),
+                    ]);
+                    $remaining -= (float) $sale->total_amount;
+                }
+            }
+        });
+
+        return ApiResponse::success($data, 'Grader payroll settled — ESP deductions recorded');
     }
 
     // ── Record advance to a grader ─────────────────────────────────────────────

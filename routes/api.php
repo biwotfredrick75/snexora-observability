@@ -979,23 +979,33 @@ Route::middleware('auth:api')->group(function () {
     // ── AI Chat ──────────────────────────────────────────────────────────────
     Route::post('analytics/chat',                  [AiChatController::class, 'chat']);
 
-    // ── ESP (External Service Providers) ─────────────────────────────────────
-    Route::get   ('esp/dashboard',                       [EspController::class, 'dashboard']);
-    Route::get   ('esp/providers/next-code',             [EspController::class, 'nextCode']);
-    Route::get   ('esp/providers',                       [EspController::class, 'indexProviders']);
-    Route::post  ('esp/providers',                       [EspController::class, 'storeProvider']);
-    Route::get   ('esp/providers/{provider}',            [EspController::class, 'showProvider']);
-    Route::put   ('esp/providers/{provider}',            [EspController::class, 'updateProvider']);
-    Route::get   ('esp/farmers/{farmerId}/credit',       [EspController::class, 'farmerCredit']);
-    Route::get   ('esp/farmer-sales',                    [EspController::class, 'indexFarmerSales']);
-    Route::post  ('esp/farmer-sales',                    [EspController::class, 'storeFarmerSale']);
-    Route::get   ('esp/farmer-sales/{sale}',             [EspController::class, 'showFarmerSale']);
-    Route::get   ('esp/company-purchases',               [EspController::class, 'indexCompanyPurchases']);
-    Route::post  ('esp/company-purchases',               [EspController::class, 'storeCompanyPurchase']);
-    Route::get   ('esp/company-purchases/{purchase}',    [EspController::class, 'showCompanyPurchase']);
-    Route::get   ('esp/settlements',                     [EspController::class, 'indexSettlements']);
-    Route::post  ('esp/settlements/preview',             [EspController::class, 'previewSettlement']);
-    Route::post  ('esp/settlements',                     [EspController::class, 'postSettlement']);
+    // ── ESP (External Agrovets & Service Providers) ──────────────────────────
+    Route::get   ('esp/dashboard',                       [EspController::class, 'dashboard'])->middleware('permission:view-esp');
+    Route::get   ('esp/providers/next-code',             [EspController::class, 'nextCode'])->middleware('permission:view-esp');
+    Route::get   ('esp/providers',                       [EspController::class, 'indexProviders'])->middleware('permission:view-esp');
+    Route::post  ('esp/providers',                       [EspController::class, 'storeProvider'])->middleware('permission:manage-esp');
+    Route::get   ('esp/providers/{provider}',            [EspController::class, 'showProvider'])->middleware('permission:view-esp');
+    Route::put   ('esp/providers/{provider}',             [EspController::class, 'updateProvider'])->middleware('permission:manage-esp');
+    Route::get   ('esp/farmers/{farmerId}/credit',       [EspController::class, 'farmerCredit'])->middleware('permission:view-esp');
+    Route::get   ('esp/farmer-sales',                    [EspController::class, 'indexFarmerSales'])->middleware('permission:view-esp');
+    Route::post  ('esp/farmer-sales',                    [EspController::class, 'storeFarmerSale'])->middleware('permission:manage-esp');
+    Route::get   ('esp/farmer-sales/{sale}',             [EspController::class, 'showFarmerSale'])->middleware('permission:view-esp');
+    Route::get   ('esp/company-purchases',               [EspController::class, 'indexCompanyPurchases'])->middleware('permission:view-esp');
+    Route::post  ('esp/company-purchases',               [EspController::class, 'storeCompanyPurchase'])->middleware('permission:manage-esp');
+    Route::get   ('esp/company-purchases/{purchase}',    [EspController::class, 'showCompanyPurchase'])->middleware('permission:view-esp');
+    Route::get   ('esp/settlements',                     [EspController::class, 'indexSettlements'])->middleware('permission:view-esp');
+    Route::post  ('esp/settlements/preview',             [EspController::class, 'previewSettlement'])->middleware('permission:manage-esp');
+    Route::post  ('esp/settlements',                     [EspController::class, 'postSettlement'])->middleware('permission:manage-esp');
+
+    // ── ESP: multi-party sales (mobile app — farmers, employees, transporters) ──
+    Route::get   ('esp/credit-score',                    [EspController::class, 'creditScore'])->middleware('permission:view-esp');
+    Route::get   ('esp/parties',                         [EspController::class, 'indexParties'])->middleware('permission:view-esp');
+    Route::get   ('esp/sales',                           [EspController::class, 'indexSales'])->middleware('permission:view-esp');
+    Route::post  ('esp/sales',                           [EspController::class, 'storeSale'])->middleware('permission:manage-esp');
+    Route::get   ('esp/sales/{sale}',                    [EspController::class, 'showSale'])->middleware('permission:view-esp');
+    Route::put   ('esp/sales/{sale}',                    [EspController::class, 'updateSale'])->middleware('permission:manage-esp');
+    Route::post  ('esp/sales/{sale}/void',               [EspController::class, 'voidSale'])->middleware('permission:manage-esp');
+    Route::post  ('esp/sales/{sale}/adjust',             [EspController::class, 'adjustSale'])->middleware('permission:manage-esp');
 
     // ── Audit ────────────────────────────────────────────────────────────────
     Route::post('audit/run', [AuditController::class, 'run']);
@@ -1194,6 +1204,7 @@ Route::middleware('auth:api')->group(function () {
         // Grader Payroll
         Route::get('grader-payroll/form-data',   [GraderPayrollController::class, 'formData']);
         Route::post('grader-payroll/process',    [GraderPayrollController::class, 'process']);
+        Route::post('grader-payroll/settle',     [GraderPayrollController::class, 'settle']);
         Route::post('grader-payroll/advances',   [GraderPayrollController::class, 'storeAdvance']);
         Route::post('grader-payroll/rates',      [GraderPayrollController::class, 'saveRate']);
 

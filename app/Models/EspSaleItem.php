@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class EspFarmerSaleItem extends Model
+class EspSaleItem extends Model
 {
     public $timestamps = false;
     protected $table = 'esp_farmer_sale_items';
@@ -20,6 +20,6 @@ class EspFarmerSaleItem extends Model
 
     public function sale(): BelongsTo
     {
-        return $this->belongsTo(EspFarmerSale::class, 'sale_id');
+        return $this->belongsTo(EspSale::class, 'sale_id');
     }
 }

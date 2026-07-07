@@ -85,6 +85,10 @@ class RolePermissionSeeder extends Seeder
             'view-payroll',
             'manage-payroll',
 
+            // ESP Module (External Agrovets & Service Providers)
+            'view-esp',
+            'manage-esp',
+
             // HRM Module
             'view-hrm',
             'manage-hrm',

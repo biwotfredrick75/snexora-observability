@@ -4,13 +4,16 @@ namespace App\Http\Controllers\Esp;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\Employee;
 use App\Models\EspProvider;
-use App\Models\EspFarmerSale;
-use App\Models\EspFarmerSaleItem;
+use App\Models\EspSale;
+use App\Models\EspSaleAdjustment;
+use App\Models\EspSaleItem;
 use App\Models\EspCompanyPurchase;
 use App\Models\EspCompanyPurchaseItem;
 use App\Models\EspSettlement;
 use App\Models\Farmer;
+use App\Services\Esp\PartyCreditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -66,10 +69,10 @@ class EspController extends Controller
 
     public function showProvider(EspProvider $provider): JsonResponse
     {
-        $provider->load(['farmerSales', 'companyPurchases', 'settlements']);
+        $provider->load(['sales', 'companyPurchases', 'settlements']);
 
         // Compute summary balances
-        $provider->farmer_sales_outstanding  = $provider->farmerSales->where('status', '!=', 'settled')->sum('balance');
+        $provider->farmer_sales_outstanding  = $provider->sales->where('status', '!=', 'settled')->sum('balance');
         $provider->company_purchases_outstanding = $provider->companyPurchases->where('status', '!=', 'settled')->sum('balance');
         $provider->net_position = $provider->farmer_sales_outstanding - $provider->company_purchases_outstanding;
 
@@ -117,7 +120,7 @@ class EspController extends Controller
         $creditLimit = round((float) $avgMonthly * ($creditLimitPct / 100), 2);
 
         // Outstanding ESP balance for this farmer
-        $outstanding = EspFarmerSale::where('farmer_id', $farmerId)
+        $outstanding = EspSale::where('farmer_id', $farmerId)
             ->whereIn('status', ['pending', 'partial'])
             ->sum('balance');
 
@@ -144,7 +147,7 @@ class EspController extends Controller
 
     public function indexFarmerSales(Request $request): JsonResponse
     {
-        $q = EspFarmerSale::with(['esp:id,name,esp_code', 'farmer:id,farmer_no,full_name']);
+        $q = EspSale::with(['esp:id,name,esp_code', 'farmer:id,farmer_no,full_name']);
         if ($request->esp_id)   $q->where('esp_id', $request->esp_id);
         if ($request->farmer_id)$q->where('farmer_id', $request->farmer_id);
         if ($request->status)   $q->where('status', $request->status);
@@ -169,9 +172,11 @@ class EspController extends Controller
         $total = collect($data['items'])->sum(fn($i) => $i['qty'] * $i['unit_price']);
 
         return DB::transaction(function () use ($data, $total, $request) {
-            $sale = EspFarmerSale::create([
+            $sale = EspSale::create([
                 'sale_no'         => $this->nextRef('ESPS', 'esp_farmer_sales', 'sale_no'),
                 'esp_id'          => $data['esp_id'],
+                'party_type'      => 'farmer',
+                'party_id'        => $data['farmer_id'],
                 'farmer_id'       => $data['farmer_id'],
                 'sale_date'       => $data['sale_date'],
                 'total_amount'    => $total,
@@ -183,7 +188,7 @@ class EspController extends Controller
             ]);
 
             foreach ($data['items'] as $item) {
-                EspFarmerSaleItem::create([
+                EspSaleItem::create([
                     'sale_id'     => $sale->id,
                     'description' => $item['description'],
                     'qty'         => $item['qty'],
@@ -196,9 +201,232 @@ class EspController extends Controller
         });
     }
 
-    public function showFarmerSale(EspFarmerSale $sale): JsonResponse
+    public function showFarmerSale(EspSale $sale): JsonResponse
     {
         return ApiResponse::success($sale->load(['esp', 'farmer', 'items']));
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  MULTI-PARTY SALES (mobile app — farmers, employees, transporters/graders)
+    // ════════════════════════════════════════════════════════════════════════
+
+    /** GET /esp/credit-score?party_type=&party_id= — used by the app before checkout */
+    public function creditScore(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'party_type' => 'required|in:farmer,employee,transporter',
+            'party_id'   => 'required|integer|min:1',
+        ]);
+
+        try {
+            $score = app(PartyCreditService::class)->score($data['party_type'], (int) $data['party_id']);
+        } catch (\InvalidArgumentException $e) {
+            return ApiResponse::notFound($e->getMessage());
+        }
+
+        return ApiResponse::success(array_merge(['party_type' => $data['party_type'], 'party_id' => (int) $data['party_id']], $score));
+    }
+
+    /** GET /esp/parties?party_type=employee|transporter&search= — lookup lists the app needs */
+    public function indexParties(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'party_type' => 'required|in:employee,transporter',
+            'search'     => 'nullable|string|max:100',
+        ]);
+
+        if ($data['party_type'] === 'employee') {
+            $q = Employee::query()->where('status', 'active');
+            if (! empty($data['search'])) {
+                $s = $data['search'];
+                $q->where(fn ($w) => $w->where('full_name', 'like', "%{$s}%")->orWhere('emp_no', 'like', "%{$s}%"));
+            }
+            return ApiResponse::success($q->orderBy('full_name')->limit(50)->get(['id', 'emp_no', 'full_name', 'basic_salary']));
+        }
+
+        $q = DB::table('inventory_locations')->whereIn('type', ['grader', 'vendor'])->where('inactive', false);
+        if (! empty($data['search'])) {
+            $s = $data['search'];
+            $q->where(fn ($w) => $w->where('name', 'like', "%{$s}%")->orWhere('code', 'like', "%{$s}%"));
+        }
+        return ApiResponse::success($q->orderBy('name')->limit(50)->get(['id', 'code', 'name']));
+    }
+
+    /** POST /esp/sales — generalized create for any party type, server-enforced credit limit */
+    public function storeSale(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'esp_id'        => 'required|exists:esp_providers,id',
+            'party_type'    => 'required|in:farmer,employee,transporter',
+            'party_id'      => 'required|integer|min:1',
+            'sale_date'     => 'required|date',
+            'notes'         => 'nullable|string',
+            'items'         => 'required|array|min:1',
+            'items.*.description' => 'required|string|max:255',
+            'items.*.qty'         => 'required|numeric|min:0.001',
+            'items.*.unit_price'  => 'required|numeric|min:0',
+        ]);
+
+        $total = collect($data['items'])->sum(fn ($i) => $i['qty'] * $i['unit_price']);
+
+        try {
+            $score = app(PartyCreditService::class)->score($data['party_type'], (int) $data['party_id']);
+        } catch (\InvalidArgumentException $e) {
+            return ApiResponse::notFound($e->getMessage());
+        }
+
+        if ($total > $score['available_credit']) {
+            return ApiResponse::error(
+                sprintf(
+                    'Sale of %.2f exceeds available credit of %.2f for this %s.',
+                    $total, $score['available_credit'], $data['party_type']
+                ),
+                422
+            );
+        }
+
+        return DB::transaction(function () use ($data, $total) {
+            $sale = EspSale::create([
+                'sale_no'         => $this->nextRef('ESPS', 'esp_farmer_sales', 'sale_no'),
+                'esp_id'          => $data['esp_id'],
+                'party_type'      => $data['party_type'],
+                'party_id'        => $data['party_id'],
+                'farmer_id'       => $data['party_type'] === 'farmer' ? $data['party_id'] : null,
+                'sale_date'       => $data['sale_date'],
+                'total_amount'    => $total,
+                'deducted_amount' => 0,
+                'balance'         => $total,
+                'status'          => 'pending',
+                'notes'           => $data['notes'] ?? null,
+                'created_by'      => auth()->id(),
+            ]);
+
+            foreach ($data['items'] as $item) {
+                EspSaleItem::create([
+                    'sale_id'     => $sale->id,
+                    'description' => $item['description'],
+                    'qty'         => $item['qty'],
+                    'unit_price'  => $item['unit_price'],
+                    'total'       => round($item['qty'] * $item['unit_price'], 2),
+                ]);
+            }
+
+            return ApiResponse::created($sale->load('items'), 'Sale recorded');
+        });
+    }
+
+    /** GET /esp/sales?party_type=&party_id=&esp_id=&status= */
+    public function indexSales(Request $request): JsonResponse
+    {
+        $q = EspSale::with(['esp:id,name,esp_code']);
+        if ($request->esp_id)     $q->where('esp_id', $request->esp_id);
+        if ($request->party_type) $q->where('party_type', $request->party_type);
+        if ($request->party_id)   $q->where('party_id', $request->party_id);
+        if ($request->status)     $q->where('status', $request->status);
+        return ApiResponse::success($q->orderByDesc('id')->limit(200)->get());
+    }
+
+    public function showSale(EspSale $sale): JsonResponse
+    {
+        return ApiResponse::success($sale->load(['esp', 'items', 'adjustments']));
+    }
+
+    /** PUT /esp/sales/{id} — edit line items while still pending & not yet deducted */
+    public function updateSale(Request $request, EspSale $sale): JsonResponse
+    {
+        if ($sale->party_deducted) {
+            return ApiResponse::error('Cannot edit — already deducted from the party\'s pay. Raise an adjustment instead.', 422);
+        }
+        if ($sale->status === 'void') {
+            return ApiResponse::error('Cannot edit a voided sale', 422);
+        }
+
+        $data = $request->validate([
+            'sale_date' => 'sometimes|date',
+            'notes'     => 'nullable|string',
+            'items'     => 'required|array|min:1',
+            'items.*.description' => 'required|string|max:255',
+            'items.*.qty'         => 'required|numeric|min:0.001',
+            'items.*.unit_price'  => 'required|numeric|min:0',
+        ]);
+
+        $total = collect($data['items'])->sum(fn ($i) => $i['qty'] * $i['unit_price']);
+
+        try {
+            $score = app(PartyCreditService::class)->score($sale->party_type, (int) $sale->party_id);
+        } catch (\InvalidArgumentException $e) {
+            return ApiResponse::notFound($e->getMessage());
+        }
+        // This sale's own current total is already excluded from "already_invoiced"
+        // only once we remove it below — check against credit room excluding itself.
+        $availableExcludingThis = $score['available_credit'] + (float) $sale->total_amount;
+        if ($total > $availableExcludingThis) {
+            return ApiResponse::error(
+                sprintf('Updated total %.2f exceeds available credit of %.2f.', $total, $availableExcludingThis),
+                422
+            );
+        }
+
+        return DB::transaction(function () use ($sale, $data, $total) {
+            $sale->items()->delete();
+            foreach ($data['items'] as $item) {
+                EspSaleItem::create([
+                    'sale_id'     => $sale->id,
+                    'description' => $item['description'],
+                    'qty'         => $item['qty'],
+                    'unit_price'  => $item['unit_price'],
+                    'total'       => round($item['qty'] * $item['unit_price'], 2),
+                ]);
+            }
+
+            $sale->update([
+                'sale_date'    => $data['sale_date'] ?? $sale->sale_date,
+                'notes'        => $data['notes'] ?? $sale->notes,
+                'total_amount' => $total,
+                'balance'      => $total - (float) $sale->deducted_amount,
+            ]);
+
+            return ApiResponse::updated($sale->load('items'), 'Sale updated');
+        });
+    }
+
+    /** POST /esp/sales/{id}/void — void a pending, undeducted sale */
+    public function voidSale(EspSale $sale): JsonResponse
+    {
+        if ($sale->party_deducted) {
+            return ApiResponse::error('Cannot void — already deducted from the party\'s pay. Raise an adjustment instead.', 422);
+        }
+
+        $sale->update(['status' => 'void', 'balance' => 0]);
+        return ApiResponse::success($sale, 'Sale voided');
+    }
+
+    /** POST /esp/sales/{id}/adjust — append-only correction after the fact */
+    public function adjustSale(Request $request, EspSale $sale): JsonResponse
+    {
+        if ($sale->status === 'void') {
+            return ApiResponse::error('Cannot adjust a voided sale', 422);
+        }
+
+        $data = $request->validate([
+            'delta_amount' => 'required|numeric|not_in:0',
+            'reason'       => 'required|string|max:255',
+        ]);
+
+        return DB::transaction(function () use ($sale, $data) {
+            EspSaleAdjustment::create([
+                'sale_id'      => $sale->id,
+                'delta_amount' => $data['delta_amount'],
+                'reason'       => $data['reason'],
+                'created_by'   => auth()->id(),
+            ]);
+
+            $sale->total_amount += $data['delta_amount'];
+            $sale->balance      += $data['delta_amount'];
+            $sale->save();
+
+            return ApiResponse::created($sale->load(['items', 'adjustments']), 'Adjustment recorded');
+        });
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -287,7 +515,7 @@ class EspController extends Controller
         $to    = $request->period_to;
 
         // Farmer sales that have deductions in this period (all outstanding)
-        $farmerSales = EspFarmerSale::where('esp_id', $espId)
+        $farmerSales = EspSale::where('esp_id', $espId)
             ->whereIn('status', ['pending', 'partial'])
             ->where('sale_date', '<=', $to)
             ->with(['farmer:id,farmer_no,full_name'])
@@ -333,7 +561,7 @@ class EspController extends Controller
             $to    = $data['period_to'];
 
             // Collect outstanding farmer sales (settle oldest first)
-            $farmerSales = EspFarmerSale::where('esp_id', $espId)
+            $farmerSales = EspSale::where('esp_id', $espId)
                 ->whereIn('status', ['pending', 'partial'])
                 ->where('sale_date', '<=', $to)
                 ->orderBy('id')
@@ -397,7 +625,7 @@ class EspController extends Controller
         $providers = EspProvider::where('status', 'active')->get();
 
         $summary = $providers->map(function ($esp) {
-            $farmerOutstanding  = EspFarmerSale::where('esp_id', $esp->id)->whereIn('status', ['pending', 'partial'])->sum('balance');
+            $farmerOutstanding  = EspSale::where('esp_id', $esp->id)->whereIn('status', ['pending', 'partial'])->sum('balance');
             $companyOutstanding = EspCompanyPurchase::where('esp_id', $esp->id)->whereIn('status', ['pending', 'partial'])->sum('balance');
             return [
                 'id'                  => $esp->id,

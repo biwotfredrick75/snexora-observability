@@ -147,6 +147,16 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
                 ->groupBy('farmer_id')
                 ->pluck('invoice_total', 'farmer_id');
 
+            // External agrovet/service-provider (ESP) sales not yet deducted from this farmer
+            $espMap = DB::table('esp_farmer_sales')
+                ->where('party_type', 'farmer')
+                ->whereIn('party_id', $chunk)
+                ->where('party_deducted', false)
+                ->where('status', '!=', 'void')
+                ->selectRaw('party_id AS farmer_id, SUM(total_amount) AS esp_total')
+                ->groupBy('party_id')
+                ->pluck('esp_total', 'farmer_id');
+
             // Carry-forward debt from previous period
             $carryForwardMap = DB::table('farmer_carry_forwards')
                 ->whereIn('farmer_id', $chunk)
@@ -160,6 +170,7 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
 
                 $advanceAmount    = (float) ($advancesMap[$farmerId] ?? 0);
                 $invoiceAmount    = (float) ($invoicesMap[$farmerId] ?? 0);
+                $espAmount        = (float) ($espMap[$farmerId] ?? 0);
                 $carryFwdAmount   = (float) ($carryForwardMap[$farmerId] ?? 0);
                 $farmerDeductions = $deductions->get($farmerId, collect());
                 $deductMap = [];
@@ -171,7 +182,7 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
                     $totalDed += $amount;
                 }
 
-                $rawNet     = $grossAmount - $advanceAmount - $totalDed - $invoiceAmount - $carryFwdAmount;
+                $rawNet     = $grossAmount - $advanceAmount - $totalDed - $invoiceAmount - $espAmount - $carryFwdAmount;
                 $deficit    = $rawNet < 0 ? round(abs($rawNet), 4) : 0.0;
                 $netPayment = max(0.0, $rawNet);
 
@@ -179,7 +190,7 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
                 try {
                     $transNo = null;
                     DB::transaction(function () use (
-                        $farmerId, $grossAmount, $advanceAmount, $invoiceAmount, $carryFwdAmount,
+                        $farmerId, $grossAmount, $advanceAmount, $invoiceAmount, $espAmount, $carryFwdAmount,
                         $netPayment, $deficit, $totalDed,
                         $deductMap, $batch, $datePaid,
                         $farmersPayableAcc, $bankAcc,
@@ -211,6 +222,24 @@ class ProcessFarmerPaymentsBatch implements ShouldQueue
                         if ($carryFwdAmount > 0) {
                             $this->glPost($transNo, $datePaid, $bankAcc,
                                           -$carryFwdAmount, $ref, $narr . ' [carry-fwd recovery]', $batch->created_by ?? '');
+                        }
+
+                        // CR Bank — external agrovet/service-provider (ESP) sale recovery
+                        if ($espAmount > 0) {
+                            $this->glPost($transNo, $datePaid, $bankAcc,
+                                          -$espAmount, $ref, $narr . ' [esp recovery]', $batch->created_by ?? '');
+
+                            DB::table('esp_farmer_sales')
+                                ->where('party_type', 'farmer')
+                                ->where('party_id', $farmerId)
+                                ->where('party_deducted', false)
+                                ->where('status', '!=', 'void')
+                                ->update([
+                                    'party_deducted'     => true,
+                                    'party_deducted_at'  => $datePaid,
+                                    'party_deducted_ref' => $batch->reference,
+                                    'updated_at'         => now(),
+                                ]);
                         }
 
                         // CR Bank — remaining net cash out at payroll
