@@ -787,6 +787,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('payment-vouchers/approved',           [PaymentVoucherController::class, 'approvedVouchers']);
         Route::get('payment-vouchers',                    [PaymentVoucherController::class, 'index']);
         Route::post('payment-vouchers',                   [PaymentVoucherController::class, 'store']);
+        Route::post('payment-vouchers/direct-pay',        [PaymentVoucherController::class, 'directPay']);
         Route::get('payment-vouchers/{id}',               [PaymentVoucherController::class, 'show']);
         Route::get('payment-vouchers/{id}/gl-transactions',  [PaymentVoucherController::class, 'glTransactions']);
         Route::post('payment-vouchers/{id}/payables-approve', [PaymentVoucherController::class, 'payablesApprove']);

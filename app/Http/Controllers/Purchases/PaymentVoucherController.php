@@ -207,6 +207,24 @@ class PaymentVoucherController extends Controller
             'allocations.*.this_allocation'  => 'required|numeric|min:0',
         ]);
 
+        $allocations = $request->allocations ?? [];
+        $gross = round((float) $request->amount + (float) ($request->withholding_tax_amount ?? 0), 2);
+        $allocatedTotal = round(collect($allocations)->sum('this_allocation'), 2);
+        if ($allocatedTotal > $gross) {
+            return ApiResponse::validationError([
+                'allocations' => "Allocated total ({$allocatedTotal}) cannot exceed the voucher's gross amount ({$gross})",
+            ]);
+        }
+        foreach ($allocations as $alloc) {
+            if (($alloc['this_allocation'] ?? 0) <= 0) continue;
+            $maxAllocatable = $this->maxAllocatable($alloc['transaction_type'], $alloc['transaction_id']);
+            if (round((float) $alloc['this_allocation'], 2) > round($maxAllocatable, 2) + 0.01) {
+                return ApiResponse::validationError([
+                    'allocations' => "Allocation of {$alloc['this_allocation']} for {$alloc['transaction_type']} #{$alloc['transaction_id']} exceeds its outstanding balance ({$maxAllocatable})",
+                ]);
+            }
+        }
+
         DB::beginTransaction();
         try {
             $voucher = PaymentVoucher::create([
@@ -243,6 +261,24 @@ class PaymentVoucherController extends Controller
             DB::rollBack();
             return ApiResponse::validationError(['error' => $e->getMessage()]);
         }
+    }
+
+    /**
+     * POST /purchases/payment-vouchers/direct-pay
+     * "Direct Payments to Suppliers" — creates and immediately posts a voucher
+     * in one step (store() + post() back to back) instead of leaving it
+     * sitting in draft waiting for a separate Post Voucher Payment visit.
+     */
+    public function directPay(Request $request): JsonResponse
+    {
+        $storeResponse = $this->store($request);
+        $storeData = json_decode($storeResponse->getContent(), true);
+
+        if (!($storeData['success'] ?? false)) {
+            return $storeResponse;
+        }
+
+        return $this->post($request, $storeData['data']['id']);
     }
 
     /**
@@ -370,35 +406,13 @@ class PaymentVoucherController extends Controller
 
         DB::beginTransaction();
         try {
-            $advanceAmount = 0;
+            $gross = round((float) $voucher->amount + (float) $voucher->withholding_tax_amount, 2);
+
+            // Allocations may already exist (set at store() time, e.g. by the
+            // one-step Direct Payment flow) or arrive now — either way they go
+            // through the same validation before anything posts, so the GL
+            // always balances regardless of which step attached them.
             if ($voucher->allocations->isEmpty() && $request->filled('allocations')) {
-                $gross = round((float) $voucher->amount + (float) $voucher->withholding_tax_amount, 2);
-                $allocatedTotal = round(collect($request->allocations)->sum('this_allocation'), 2);
-
-                if ($allocatedTotal > $gross) {
-                    DB::rollBack();
-                    return ApiResponse::validationError([
-                        'allocations' => "Allocated total ({$allocatedTotal}) cannot exceed the voucher's gross amount ({$gross})",
-                    ]);
-                }
-
-                // Any unallocated remainder is paid ahead of an invoice — parked
-                // as a supplier advance rather than blocking the post.
-                $advanceAmount = round($gross - $allocatedTotal, 2);
-
-                // Each row can't absorb more than its own outstanding balance —
-                // the total matching the voucher gross isn't enough on its own,
-                // since that lets one row silently soak up another's shortfall.
-                foreach ($request->allocations as $alloc) {
-                    $maxAllocatable = $this->maxAllocatable($alloc['transaction_type'], $alloc['transaction_id']);
-                    if (round((float) $alloc['this_allocation'], 2) > round($maxAllocatable, 2) + 0.01) {
-                        DB::rollBack();
-                        return ApiResponse::validationError([
-                            'allocations' => "Allocation of {$alloc['this_allocation']} for {$alloc['transaction_type']} #{$alloc['transaction_id']} exceeds its outstanding balance ({$maxAllocatable})",
-                        ]);
-                    }
-                }
-
                 foreach ($request->allocations as $alloc) {
                     PaymentVoucherAllocation::create([
                         'payment_voucher_id' => $voucher->id,
@@ -407,9 +421,33 @@ class PaymentVoucherController extends Controller
                         'this_allocation'    => $alloc['this_allocation'],
                     ]);
                 }
-
                 $voucher->load('allocations');
             }
+
+            $allocatedTotal = round($voucher->allocations->sum('this_allocation'), 2);
+            if ($allocatedTotal > $gross) {
+                DB::rollBack();
+                return ApiResponse::validationError([
+                    'allocations' => "Allocated total ({$allocatedTotal}) cannot exceed the voucher's gross amount ({$gross})",
+                ]);
+            }
+
+            // Each row can't absorb more than its own outstanding balance — the
+            // total matching the voucher gross isn't enough on its own, since
+            // that lets one row silently soak up another's shortfall.
+            foreach ($voucher->allocations as $alloc) {
+                $maxAllocatable = $this->maxAllocatable($alloc->transaction_type, $alloc->transaction_id, $alloc->id);
+                if (round((float) $alloc->this_allocation, 2) > round($maxAllocatable, 2) + 0.01) {
+                    DB::rollBack();
+                    return ApiResponse::validationError([
+                        'allocations' => "Allocation of {$alloc->this_allocation} for {$alloc->transaction_type} #{$alloc->transaction_id} exceeds its outstanding balance ({$maxAllocatable})",
+                    ]);
+                }
+            }
+
+            // Any unallocated remainder is paid ahead of an invoice — parked as
+            // a supplier advance rather than blocking the post.
+            $advanceAmount = round($gross - $allocatedTotal, 2);
 
             // GL type code 22 = Supplier Payment (see GlInquiryController::typeLabels).
             // trans_no must be the integer voucher id — gld_transactions.trans_no is
@@ -526,10 +564,11 @@ class PaymentVoucherController extends Controller
      * server-side so a client can't post an allocation larger than what's
      * actually still owed on that specific invoice/GRN/credit note.
      */
-    private function maxAllocatable(string $transactionType, int $transactionId): float
+    private function maxAllocatable(string $transactionType, int $transactionId, ?int $excludeAllocationId = null): float
     {
         $alreadyAllocated = (float) PaymentVoucherAllocation::where('transaction_type', $transactionType)
             ->where('transaction_id', $transactionId)
+            ->when($excludeAllocationId, fn ($q) => $q->where('id', '!=', $excludeAllocationId))
             ->sum('this_allocation');
 
         if ($transactionType === 'Credit Note') {
