@@ -145,6 +145,18 @@ class FarmerPaymentController extends Controller
             ->groupBy('farmer_id')
             ->pluck('invoice_total', 'farmer_id');
 
+        // ── External agrovet/service-provider (ESP) sales not yet deducted ────
+        // Not scoped to this period — any unsettled sale is owed regardless of
+        // when it was made, matching ProcessFarmerPaymentsBatch's actual logic.
+        $espMap = DB::table('esp_farmer_sales')
+            ->where('party_type', 'farmer')
+            ->whereIn('party_id', $farmerIds)
+            ->where('party_deducted', false)
+            ->where('status', '!=', 'void')
+            ->selectRaw('party_id AS farmer_id, SUM(total_amount) AS esp_total')
+            ->groupBy('party_id')
+            ->pluck('esp_total', 'farmer_id');
+
         // ── Carry-forward debt from previous period ───────────────────────────
         $carryForwardMap = DB::table('farmer_carry_forwards')
             ->whereIn('farmer_id', $farmerIds)
@@ -183,14 +195,15 @@ class FarmerPaymentController extends Controller
             ];
         }
 
-        // ── Combine milk + advances + deductions + invoices + carry-forward ─────
+        // ── Combine milk + advances + deductions + invoices + ESP + carry-forward ─
         $farmers = $milkRows->map(function ($row) use (
-            $services, $deductionMap, $advancesMap, $invoicesMap, $carryForwardMap
+            $services, $deductionMap, $advancesMap, $invoicesMap, $espMap, $carryForwardMap
         ) {
             $fid           = $row->farmer_id;
             $gross         = (float) $row->gross_amount;
             $advanceAmount = (float) ($advancesMap[$fid] ?? 0);
             $invoiceAmount = (float) ($invoicesMap[$fid] ?? 0);
+            $espAmount     = (float) ($espMap[$fid] ?? 0);
             $carryForward  = (float) ($carryForwardMap[$fid] ?? 0);
             $totalDeduct   = 0.0;
             $deductions    = [];
@@ -205,7 +218,7 @@ class FarmerPaymentController extends Controller
                 $totalDeduct += $amount;
             }
 
-            $net     = $gross - $advanceAmount - $totalDeduct - $invoiceAmount - $carryForward;
+            $net     = $gross - $advanceAmount - $totalDeduct - $invoiceAmount - $espAmount - $carryForward;
             $deficit = $net < 0 ? round(abs($net), 4) : 0;
             $net     = max(0, $net);
 
@@ -230,6 +243,7 @@ class FarmerPaymentController extends Controller
                     : 0,
                 'advance_amount'       => round($advanceAmount, 2),
                 'invoice_amount'       => round($invoiceAmount, 2),
+                'esp_amount'           => round($espAmount, 2),
                 'carry_forward'        => round($carryForward, 2),
                 'deductions'           => $deductions,
                 'total_deductions'     => round($totalDeduct, 4),
@@ -245,6 +259,7 @@ class FarmerPaymentController extends Controller
             'gross_amount'      => round($farmers->sum('gross_amount'), 4),
             'total_advances'    => round($farmers->sum('advance_amount'), 2),
             'total_invoices'    => round($farmers->sum('invoice_amount'), 2),
+            'total_esp'         => round($farmers->sum('esp_amount'), 2),
             'total_carry_fwd'   => round($farmers->sum('carry_forward'), 2),
             'total_deductions'  => round($farmers->sum('total_deductions'), 4),
             'net_payment'       => round($farmers->sum('net_payment'), 4),
