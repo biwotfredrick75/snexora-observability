@@ -102,6 +102,12 @@ class SupplierController extends Controller
         $data['idNumber']            = $data['idNumber']        ?? '';
         $data['bankNumber']          = $data['bankNumber']      ?? '';
         $data['bankBranch']          = $data['bankBranch']      ?? '';
+        $data['bankAccount']         = $data['bankAccount']     ?? '';
+        $data['website']             = $data['website']         ?? '';
+        $data['supplierAccountNumber'] = $data['supplierAccountNumber'] ?? '';
+        $data['purchaseAccount']     = $data['purchaseAccount']     ?? '';
+        $data['payableAccount']      = $data['payableAccount']      ?? '';
+        $data['paymentDiscountAccount'] = $data['paymentDiscountAccount'] ?? '';
         $data['nextOfKin']           = $data['nextOfKin']       ?? '';
         $data['nextOfKinId']         = $data['nextOfKinId']     ?? '';
         $data['nextOfKinRelationship'] = $data['nextOfKinRelationship'] ?? '';
@@ -118,10 +124,7 @@ class SupplierController extends Controller
             });
         } catch (QueryException $e) {
             Log::error('Supplier creation failed: ' . $e->getMessage());
-            return ApiResponse::error(
-                'Could not save the supplier — one of the fields has an invalid or missing value. Please review the form and try again.',
-                422
-            );
+            return ApiResponse::error($this->friendlyDbError($e), 422);
         }
 
         return ApiResponse::created($supplier, 'Supplier created');
@@ -186,10 +189,15 @@ class SupplierController extends Controller
         if (isset($data['address']) && !isset($data['supplierAddress'])) {
             $data['supplierAddress'] = $data['address'];
         }
-        // contactPerson/notes are NOT NULL at the DB level (contactPerson has a
-        // '' default, notes has none at all) — an explicit null here (empty
-        // field submitted) would still violate that.
-        foreach (['contactPerson', 'notes'] as $col) {
+        // These columns are NOT NULL at the DB level but have their default
+        // ('') only applied when the column is omitted from the INSERT/UPDATE —
+        // an explicit null (from a blank form field, converted by the
+        // ConvertEmptyStringsToNull middleware) still violates the constraint.
+        foreach ([
+            'contactPerson', 'notes', 'bankAccount', 'website',
+            'supplierAccountNumber', 'purchaseAccount', 'payableAccount',
+            'paymentDiscountAccount',
+        ] as $col) {
             if (array_key_exists($col, $data) && $data[$col] === null) {
                 $data[$col] = '';
             }
@@ -199,10 +207,7 @@ class SupplierController extends Controller
             $supplier->update($data);
         } catch (QueryException $e) {
             Log::error('Supplier update failed: ' . $e->getMessage());
-            return ApiResponse::error(
-                'Could not save the supplier — one of the fields has an invalid or missing value. Please review the form and try again.',
-                422
-            );
+            return ApiResponse::error($this->friendlyDbError($e), 422);
         }
 
         return ApiResponse::updated($supplier, 'Supplier updated');
@@ -213,6 +218,46 @@ class SupplierController extends Controller
         $supplier = Supplier::findOrFail($id);
         $supplier->update(['inactive' => true]);
         return ApiResponse::deleted('Supplier deactivated');
+    }
+
+    private const FIELD_LABELS = [
+        'supplierName' => 'Supplier Name', 'supplierReference' => 'Reference / Code',
+        'memberNumber' => 'Member Number', 'contactPerson' => 'Contact Person',
+        'website' => 'Website', 'bankAccount' => 'Bank Account',
+        'supplierAccountNumber' => 'Supplier Account Number', 'purchaseAccount' => 'Purchase Account',
+        'payableAccount' => 'Payable Account', 'paymentDiscountAccount' => 'Payment Discount Account',
+        'gender' => 'Gender', 'dateOfBirth' => 'Date of Birth', 'idNumber' => 'ID / National ID No.',
+        'bankNumber' => 'Bank Number', 'bankBranch' => 'Bank Branch', 'route' => 'Route',
+        'nextOfKin' => 'Next of Kin', 'nextOfKinId' => 'Next of Kin ID',
+        'nextOfKinRelationship' => 'Next of Kin Relationship', 'currencyCode' => 'Currency',
+        'supplierType' => 'Supplier Type', 'address' => 'Physical Address',
+        'supplierAddress' => 'Postal Address', 'notes' => 'Notes',
+    ];
+
+    /**
+     * Turns a raw QueryException into a message naming the actual offending
+     * field, instead of a generic "something is wrong" catch-all.
+     */
+    private function friendlyDbError(QueryException $e): string
+    {
+        $message = $e->getMessage();
+
+        if (preg_match("/Column '(\w+)' cannot be null/", $message, $m)) {
+            $label = self::FIELD_LABELS[$m[1]] ?? $m[1];
+            return "The \"{$label}\" field is required and was left empty. Please fill it in and try again.";
+        }
+
+        if (preg_match("/Duplicate entry '(.*?)' for key '[\\w.]*?(\\w+)'/", $message, $m)) {
+            $label = self::FIELD_LABELS[$m[2]] ?? $m[2];
+            return "\"{$m[1]}\" is already used by another supplier for \"{$label}\". Please use a different value.";
+        }
+
+        if (preg_match("/Data too long for column '(\w+)'/", $message, $m)) {
+            $label = self::FIELD_LABELS[$m[1]] ?? $m[1];
+            return "The value entered for \"{$label}\" is too long. Please shorten it and try again.";
+        }
+
+        return 'Could not save the supplier — one of the fields has an invalid or missing value. Please review the form and try again.';
     }
 
     /**
