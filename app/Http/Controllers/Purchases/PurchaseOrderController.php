@@ -367,11 +367,14 @@ class PurchaseOrderController extends Controller
         $tranDate  = $po->delivery_date ?? now()->toDateString();
         $glSetting = GlSetting::first();
         $grnClearing = $glSetting?->grn_clearing_account ?: 'GRN-CLEARING';
+        $discountAccount = $glSetting?->purchase_discount_account ?: '401037';
 
         foreach ($po->items as $idx => $item) {
             $qty  = (float) $item->qty;
             $cost = (float) $item->price_before_tax;
-            $lineAmount = round($qty * $cost - (float) $item->discount_amt, 4);
+            $discount = round((float) $item->discount_amt, 4);
+            $grossAmount = round($qty * $cost, 4);
+            $lineAmount  = round($grossAmount - $discount, 4);
 
             // Batch number uniquely identifies this GRN line: {po_no}-{1-based line}
             $batchNo = substr($po->po_no . '-' . ($idx + 1), 0, 50);
@@ -403,9 +406,9 @@ class PurchaseOrderController extends Controller
                 'batch_new'     => 1,
             ]);
 
-            if ($lineAmount == 0) continue;
+            if ($grossAmount == 0) continue;
 
-            // ── GL: DR Inventory ─────────────────────────────────────────────
+            // ── GL: DR Inventory (gross, before discount) ────────────────────
             GldTransaction::create([
                 'trans_no'     => $po->id,
                 'type'         => StockMovement::TYPE_GRN,
@@ -413,13 +416,29 @@ class PurchaseOrderController extends Controller
                 'account_code' => $inventoryAccount,
                 'reference'    => $po->po_no,
                 'narration'    => "GRN — {$item->description} ({$po->po_no})",
-                'amount'       => $lineAmount,        // positive = debit
+                'amount'       => $grossAmount,        // positive = debit
                 'created_by'   => $approver,
                 'dimension_id' => $itemRecord?->dimension_id ?? null,
                 'dimension2_id'=> $itemRecord?->dimension2_id ?? null,
             ]);
 
-            // ── GL: CR GRN Clearing ──────────────────────────────────────────
+            // ── GL: CR Purchase Discount ──────────────────────────────────────
+            if ($discount != 0) {
+                GldTransaction::create([
+                    'trans_no'     => $po->id,
+                    'type'         => StockMovement::TYPE_GRN,
+                    'tran_date'    => $tranDate,
+                    'account_code' => $discountAccount,
+                    'reference'    => $po->po_no,
+                    'narration'    => "Purchase discount — {$item->description} ({$po->po_no})",
+                    'amount'       => -$discount,      // negative = credit
+                    'created_by'   => $approver,
+                    'dimension_id' => $itemRecord?->dimension_id ?? null,
+                    'dimension2_id'=> $itemRecord?->dimension2_id ?? null,
+                ]);
+            }
+
+            // ── GL: CR GRN Clearing (net payable) ─────────────────────────────
             GldTransaction::create([
                 'trans_no'     => $po->id,
                 'type'         => StockMovement::TYPE_GRN,
