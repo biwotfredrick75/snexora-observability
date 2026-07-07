@@ -214,8 +214,12 @@ class PurchaseQuotationController extends Controller
 
     public function convertToPo(int $id): JsonResponse
     {
-        $q = PurchaseQuotation::with(['items', 'suppliers' => fn($s) => $s->where('status', 'selected'), 'suppliers.prices'])
-            ->findOrFail($id);
+        $q = PurchaseQuotation::with([
+            'items',
+            'suppliers' => fn($s) => $s->where('status', 'selected'),
+            'suppliers.prices',
+            'suppliers.supplier:supplierId,supplierReference',
+        ])->findOrFail($id);
 
         if ($q->status !== 'ranked') {
             return ApiResponse::error('Quotation must be ranked before converting to PO', 422);
@@ -232,7 +236,7 @@ class PurchaseQuotationController extends Controller
                 'type'               => 'po',
                 'supplier_id'        => $winner->supplier_id,
                 'reference'          => $q->quotation_no,
-                'supplier_reference' => '',
+                'supplier_reference' => $winner->supplier?->supplierReference ?? '',
                 'order_date'         => now()->toDateString(),
                 'delivery_date'      => $q->due_date,
                 'due_date'           => $q->due_date,
