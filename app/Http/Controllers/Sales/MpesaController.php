@@ -6,10 +6,12 @@ use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\CustomerPayment;
 use App\Models\DebtorAllocation;
+use App\Models\GlAccount;
 use App\Models\MpesaTransaction;
 use App\Models\SalesInvoice;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class MpesaController extends Controller
@@ -38,6 +40,8 @@ class MpesaController extends Controller
 
         $rows = $query->paginate(min((int) $request->get('per_page', 100), 500));
 
+        $this->attachPaybillMatches($rows->getCollection());
+
         // Append derived fields to each item
         $rows->getCollection()->transform(function ($tx) {
             $tx->status           = $tx->status;
@@ -47,6 +51,73 @@ class MpesaController extends Controller
         });
 
         return ApiResponse::paginated($rows, 'M-Pesa transactions retrieved');
+    }
+
+    // ── Paybill-aware reconciliation helper ─────────────────────────────────
+    //
+    // Links the till/paybill an inbound M-Pesa transaction landed on
+    // (BusinessShortCode) back to whichever gl_accounts row was tagged with
+    // that shortcode as a payment channel (see GlAccount::paymentChannels()
+    // and ChartOfAccountsController), and — for still-pending transactions —
+    // to any outstanding invoice that named the same channel as its expected
+    // payment method (SalesInvoice.payment_channel_code, set when the
+    // invoice was placed). Attaches `channel_name`, and for an unambiguous
+    // same-channel + exact-amount match, `suggested_debtor_no` /
+    // `suggested_inv_no` / `suggested_customer_name` so the reconciliation
+    // screen can pre-fill the customer picker instead of relying on BilRef
+    // matching alone.
+    private function attachPaybillMatches(Collection $rows): void
+    {
+        $shortcodes = $rows->pluck('BusinessShortCode')->filter()->unique()->values();
+        if ($shortcodes->isEmpty()) return;
+
+        // shortcode => ['code' => gl account code, 'name' => gl account name]
+        $channelsByShortcode = GlAccount::paymentChannels('mpesa')
+            ->whereIn('mpesa_shortcode', $shortcodes)
+            ->get(['code', 'name', 'mpesa_shortcode'])
+            ->keyBy('mpesa_shortcode');
+
+        if ($channelsByShortcode->isEmpty()) {
+            foreach ($rows as $tx) $tx->channel_name = null;
+            return;
+        }
+
+        $channelCodes = $channelsByShortcode->pluck('code')->unique()->values();
+
+        // Candidate outstanding invoices declared against one of those channels.
+        $invoices = SalesInvoice::query()
+            ->whereIn('payment_channel_code', $channelCodes)
+            ->where('payment_provider', 'mpesa')
+            ->where('status', '!=', 'cancelled')
+            ->withSum('allocations', 'amount')
+            ->with('customer:debtor_no,name')
+            ->get()
+            ->map(function ($inv) {
+                $inv->outstanding = round((float) $inv->amount_total - (float) ($inv->allocations_sum_amount ?? 0), 2);
+                return $inv;
+            })
+            ->filter(fn ($inv) => $inv->outstanding > 0);
+
+        // Group by "channel code|outstanding amount" — only an unambiguous
+        // (single-invoice) match at the exact amount is trusted as a suggestion.
+        $byChannelAndAmount = $invoices->groupBy(fn ($inv) => $inv->payment_channel_code . '|' . number_format($inv->outstanding, 2, '.', ''));
+
+        foreach ($rows as $tx) {
+            $channel = $channelsByShortcode->get($tx->BusinessShortCode);
+            $tx->channel_name = $channel->name ?? null;
+
+            if (! $channel || $tx->status !== 'pending') continue;
+
+            $key   = $channel->code . '|' . number_format((float) $tx->TransAmount, 2, '.', '');
+            $match = $byChannelAndAmount->get($key);
+
+            if ($match && $match->count() === 1) {
+                $invoice = $match->first();
+                $tx->suggested_debtor_no      = $invoice->debtor_no;
+                $tx->suggested_inv_no         = $invoice->inv_no;
+                $tx->suggested_customer_name  = $invoice->customer?->name;
+            }
+        }
     }
 
     // ── Check transaction status by TransID (+ optional till) ────────────────
@@ -73,18 +144,24 @@ class MpesaController extends Controller
             return ApiResponse::notFound('Transaction not found. Check the Transaction ID and Till.');
         }
 
+        $this->attachPaybillMatches(collect([$tx]));
+
         return ApiResponse::success([
             'Auto'             => $tx->Auto,
             'TransID'          => $tx->TransID,
             'TransactionType'  => $tx->TransactionType,
             'TransAmount'      => $tx->TransAmount,
             'BusinessShortCode'=> $tx->BusinessShortCode,
+            'channel_name'     => $tx->channel_name,
             'BilRef'           => $tx->BilRef,
             'MSISDN'           => $tx->MSISDN,
             'name'             => $tx->name,
             'transaction_date' => $tx->transaction_date,
             'status'           => $tx->status,
             'debtor_no'        => $tx->debtor_no,
+            'suggested_debtor_no'     => $tx->suggested_debtor_no ?? null,
+            'suggested_inv_no'        => $tx->suggested_inv_no ?? null,
+            'suggested_customer_name' => $tx->suggested_customer_name ?? null,
             'customer'         => $tx->customer,
             'payment'          => $tx->payment ? [
                 'payment_no'         => $tx->payment->payment_no,

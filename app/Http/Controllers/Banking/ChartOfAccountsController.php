@@ -39,6 +39,8 @@ class ChartOfAccountsController extends Controller
             'group_id' => 'nullable|exists:gl_account_groups,id',
             'tags'     => 'nullable|array',
             'inactive' => 'sometimes|boolean',
+            'payment_provider' => 'nullable|string|in:mpesa,bank,cash,cheque',
+            'mpesa_shortcode'  => 'nullable|string|max:20',
         ]);
 
         $account = GlAccount::create($validated);
@@ -58,6 +60,8 @@ class ChartOfAccountsController extends Controller
             'group_id' => 'nullable|exists:gl_account_groups,id',
             'tags'     => 'nullable|array',
             'inactive' => 'sometimes|boolean',
+            'payment_provider' => 'nullable|string|in:mpesa,bank,cash,cheque',
+            'mpesa_shortcode'  => 'nullable|string|max:20',
         ]);
 
         $account->update($validated);

@@ -80,6 +80,7 @@ use App\Http\Controllers\Sales\CreditNoteController;
 use App\Http\Controllers\Sales\CustomerPaymentController;
 use App\Http\Controllers\Sales\CustomerDepositController;
 use App\Http\Controllers\Sales\MpesaController;
+use App\Http\Controllers\Sales\PaymentChannelController;
 use App\Http\Controllers\Sales\ImportController;
 use App\Http\Controllers\Sales\SalesDashboardController;
 use App\Http\Controllers\Sales\CreditStatusController;
@@ -897,6 +898,9 @@ Route::middleware('auth:api')->group(function () {
     Route::post('sales/orders/{id}/items',            [SalesOrderController::class, 'addItem']);
     Route::put('sales/orders/{id}/items/{itemId}',    [SalesOrderController::class, 'updateItem']);
     Route::delete('sales/orders/{id}/items/{itemId}', [SalesOrderController::class, 'removeItem']);
+
+    // Payment Channels (M-Pesa paybills now; basis for bank accounts etc. later)
+    Route::get('sales/payment-channels',                 [PaymentChannelController::class, 'index']);
 
     // Sales Invoices (Direct)
     Route::get('sales/invoices/next-ref',               [SalesInvoiceController::class, 'nextRef']);
