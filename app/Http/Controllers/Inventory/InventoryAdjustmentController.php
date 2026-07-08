@@ -239,7 +239,7 @@ class InventoryAdjustmentController extends Controller
             throw $e;
         }
 
-        return ApiResponse::updated($adjustment->fresh()->load('items'), 'Adjustment processed');
+        return ApiResponse::updated($adjustment->fresh()->load('items.item'), 'Adjustment processed');
     }
 
     public function destroy(int $id): JsonResponse

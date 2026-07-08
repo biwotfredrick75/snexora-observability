@@ -166,10 +166,6 @@ class WorkOrderService
             }
         }
 
-        if (empty($toIssueLines) && empty($toReverseLines)) {
-            throw new \RuntimeException('No material adjustments needed — quantities already match the target.');
-        }
-
         // ── Step 2: bottleneck ratio (for issue lines only) ───────────────────
         $bottleneck = 1.0;
         if (!empty($toIssueLines)) {

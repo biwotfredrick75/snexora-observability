@@ -28,6 +28,9 @@ class WorkCentreController extends Controller
             'inactive'       => 'boolean',
         ]);
 
+        $data['rate_per_hour'] ??= 0;
+        $data['overhead_rate'] ??= 0;
+
         $centre = WorkCentre::create($data);
         return ApiResponse::created($centre, 'Work centre created');
     }
@@ -44,6 +47,9 @@ class WorkCentreController extends Controller
             'gl_account'     => 'nullable|string|max:20',
             'inactive'       => 'boolean',
         ]);
+
+        $data['rate_per_hour'] ??= 0;
+        $data['overhead_rate'] ??= 0;
 
         $centre->fill($data)->save();
         return ApiResponse::updated($centre->fresh(), 'Work centre updated');

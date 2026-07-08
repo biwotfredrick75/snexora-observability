@@ -149,14 +149,14 @@ class AiChatController extends Controller
     {
         $summary = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$from, $to])
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->selectRaw('SUM(amount_total) as revenue, COUNT(*) as invoices, COUNT(DISTINCT debtor_no) as customers')
             ->first();
 
         $topCustomers = DB::table('sales_invoices as i')
             ->join('customers as c', 'c.debtor_no', '=', 'i.debtor_no')
             ->whereBetween('i.invoice_date', [$from, $to])
-            ->whereIn('i.status', ['posted', 'paid', 'partial'])
+            ->whereIn('i.status', ['placed'])
             ->selectRaw('c.name, SUM(i.amount_total) as revenue, COUNT(*) as invoices')
             ->groupBy('i.debtor_no', 'c.name')
             ->orderByDesc('revenue')

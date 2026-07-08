@@ -62,11 +62,11 @@ class SalesReportsController extends Controller
         return ApiResponse::success([
             'rows'     => $rows,
             'totals'   => [
-                'invoices'  => $rows->sum('invoice_count'),
-                'customers' => $rows->max('customer_count'),
-                'amount'    => round((float)$rows->sum('total_amount'), 2),
-                'qty'       => round((float)$rows->sum('total_qty'), 2),
-                'avg'       => $rows->count() > 0 ? round((float)$rows->avg('avg_invoice'), 2) : 0,
+                'total_invoices'   => $rows->sum('invoice_count'),
+                'active_customers' => $rows->max('customer_count'),
+                'total_revenue'    => round((float)$rows->sum('total_amount'), 2),
+                'total_qty'        => round((float)$rows->sum('total_qty'), 2),
+                'avg_invoice'      => $rows->count() > 0 ? round((float)$rows->avg('avg_invoice'), 2) : 0,
             ],
             'from' => $from, 'to' => $to, 'group_by' => $groupBy,
         ], 'Sales summary loaded');

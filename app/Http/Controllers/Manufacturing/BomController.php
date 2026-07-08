@@ -217,11 +217,15 @@ class BomController extends Controller
 
         // When searching for a BOM's finished product, exclude raw/bought items (B flag)
         // Allow M (manufactured), D (description/assembled), F (fabricated/kit)
-        if ($request->boolean('manufactured')) {
+        $manufacturedOnly = $request->boolean('manufactured');
+        if ($manufacturedOnly) {
             $query->whereIn('mb_flag', ['M', 'D', 'F']);
         }
 
-        $items = $query->limit(30)->get(['stock_id', 'description', 'units', 'purchase_cost', 'mb_flag']);
+        // The manufactured-only list backs a full dropdown (not a live-typeahead),
+        // so it needs the whole set rather than the typeahead's 30-row cap.
+        $items = $query->limit($manufacturedOnly ? 500 : 30)
+            ->get(['stock_id', 'description', 'units', 'purchase_cost', 'mb_flag']);
 
         return ApiResponse::success($items, 'Items retrieved');
     }

@@ -178,7 +178,7 @@ class WorkOrderController extends Controller
             : sprintf('Goods issue posted — materials adjusted for %.4f %s.', $result['target_qty'], $wo->unit);
 
         return ApiResponse::success([
-            'work_order' => $wo->fresh(['items']),
+            'work_order' => $wo->fresh(['items', 'bom', 'workCentre', 'labour', 'overhead']),
             'issue'      => $result,
         ], $message);
     }
@@ -240,7 +240,7 @@ class WorkOrderController extends Controller
             DB::rollBack();
             return ApiResponse::error($e->getMessage(), 422);
         }
-        return ApiResponse::success($wo->fresh(), 'Work order completed — costs calculated');
+        return ApiResponse::success($wo->fresh(['items', 'bom', 'workCentre', 'labour', 'overhead']), 'Work order completed — costs calculated');
     }
 
     public function settle(int $id): JsonResponse
@@ -255,7 +255,7 @@ class WorkOrderController extends Controller
             DB::rollBack();
             return ApiResponse::error($e->getMessage(), 422);
         }
-        return ApiResponse::success($wo->fresh(), 'Work order settled — finished goods stock updated');
+        return ApiResponse::success($wo->fresh(['items', 'bom', 'workCentre', 'labour', 'overhead']), 'Work order settled — finished goods stock updated');
     }
 
     // ── Labour entry ──────────────────────────────────────────────────────────
