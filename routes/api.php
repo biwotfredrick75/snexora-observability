@@ -510,6 +510,10 @@ Route::middleware('auth:api')->group(function () {
             Route::get('balance-sheet',   [\App\Http\Controllers\Banking\BankingReportsController::class, 'balanceSheet']);
             Route::get('gl-listing',      [\App\Http\Controllers\Banking\BankingReportsController::class, 'glListing']);
             Route::get('journal-listing', [\App\Http\Controllers\Banking\BankingReportsController::class, 'journalListing']);
+            Route::get('allocation-report', [\App\Http\Controllers\Banking\BankingReportsController::class, 'allocationReport']);
+            Route::get('cash-flow',       [\App\Http\Controllers\Banking\BankingReportsController::class, 'cashFlow']);
+            Route::get('budget-vs-actuals', [\App\Http\Controllers\Banking\BankingReportsController::class, 'budgetVsActuals']);
+            Route::post('budget',         [\App\Http\Controllers\Banking\BankingReportsController::class, 'setBudget']);
         });
     });
 
@@ -1650,6 +1654,9 @@ Route::middleware('auth:api')->prefix('payroll')->group(function () {
 
     Route::get('p9-report',                     [PayrollController::class, 'p9Report'])->middleware('permission:view-payroll');
     Route::get('summary-report',                [PayrollController::class, 'summaryReport'])->middleware('permission:view-payroll');
+    Route::get('periods/{id}/payslip-report',   [PayrollController::class, 'payslipReport'])->middleware('permission:view-payroll');
+    Route::get('periods/{id}/staff-deductions', [PayrollController::class, 'staffDeductionStatement'])->middleware('permission:view-payroll');
+    Route::get('periods/{id}/bank-schedule',    [PayrollController::class, 'bankSchedule'])->middleware('permission:view-payroll');
 
     Route::get('components',                    [PayrollController::class, 'componentsIndex'])->middleware('permission:view-payroll');
     Route::post('components',                   [PayrollController::class, 'componentsStore'])->middleware('permission:manage-payroll');

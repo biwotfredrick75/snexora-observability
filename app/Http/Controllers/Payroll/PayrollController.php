@@ -373,4 +373,81 @@ class PayrollController extends Controller
 
         return ApiResponse::success($query->get(), 'Payroll summary report retrieved');
     }
+
+    /** Per-employee payslip breakdown for a period — one printable payslip each. */
+    public function payslipReport(int $id): JsonResponse
+    {
+        $period = PayrollPeriod::with('items.employee')->findOrFail($id);
+
+        $rows = $period->items->map(fn ($i) => [
+            'employee'         => $i->employee->full_name,
+            'employee_no'      => $i->employee->id,
+            'kra_pin'          => $i->employee->kra_pin,
+            'bank_name'        => $i->employee->bank_name,
+            'bank_account'     => $i->employee->bank_account,
+            'basic_salary'     => (float) $i->basic_salary,
+            'other_allowances' => (float) $i->other_allowances,
+            'gross_pay'        => (float) $i->gross_pay,
+            'paye'             => (float) $i->paye,
+            'shif'             => (float) $i->shif,
+            'nssf'             => (float) $i->nssf,
+            'housing_levy'     => (float) $i->housing_levy,
+            'other_deductions' => (float) $i->other_deductions,
+            'net_pay'          => (float) $i->net_pay,
+        ]);
+
+        return ApiResponse::success([
+            'period' => $period->only(['id', 'ref_no', 'period_start', 'period_end']),
+            'rows'   => $rows,
+        ], 'Payslip report retrieved');
+    }
+
+    /** Deduction breakdown per employee per component, for a period. */
+    public function staffDeductionStatement(int $id): JsonResponse
+    {
+        $period = PayrollPeriod::findOrFail($id);
+
+        $postings = PayrollPosting::with(['employee', 'component'])
+            ->where('payroll_period_id', $id)
+            ->whereHas('component', fn ($q) => $q->where('category', 'deduction'))
+            ->where('amount', '>', 0)
+            ->get()
+            ->groupBy(fn ($p) => $p->employee_id);
+
+        $rows = $postings->map(function ($items) {
+            $employee = $items->first()->employee;
+            return [
+                'employee'    => $employee->full_name,
+                'components'  => $items->map(fn ($p) => [
+                    'name'   => $p->component->name,
+                    'amount' => (float) $p->amount,
+                ])->values(),
+                'total' => round($items->sum('amount'), 2),
+            ];
+        })->values();
+
+        return ApiResponse::success([
+            'period' => $period->only(['id', 'ref_no', 'period_start', 'period_end']),
+            'rows'   => $rows,
+            'grand_total' => round($rows->sum('total'), 2),
+        ], 'Staff deduction statement retrieved');
+    }
+
+    /** On-screen preview of the bank payment schedule (same rows as bank-file CSV). */
+    public function bankSchedule(int $id): JsonResponse
+    {
+        $period = PayrollPeriod::with('items.employee')->findOrFail($id);
+        $rows   = $this->service->bankFileRows($period);
+
+        $mapped = collect($rows)->map(fn ($r) => [
+            'bank_account' => $r[0], 'bank_name' => $r[1], 'employee' => $r[2],
+            'amount'       => (float) str_replace(',', '', $r[3]), 'remarks' => $r[4],
+        ]);
+
+        return ApiResponse::success([
+            'period' => $period->only(['id', 'ref_no', 'period_start', 'period_end']),
+            'rows'   => $mapped,
+            'total'  => round($mapped->sum('amount'), 2),
+        ], 'Bank schedule retrieved');
+    }
 }
