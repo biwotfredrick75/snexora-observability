@@ -84,6 +84,10 @@ class DataResetController extends Controller
             'casual_worker_pay_run_items', 'casual_worker_pay_runs',
             'casual_pay_postings',
         ],
+        'Payroll (transactions only)' => [
+            'payroll_postings', 'payroll_items', 'payroll_periods',
+            'payroll_employee_components',
+        ],
         'Comments' => ['comments'],
     ];
 
