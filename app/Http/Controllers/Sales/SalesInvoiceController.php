@@ -141,6 +141,8 @@ class SalesInvoiceController extends Controller
                 'contact_phone'      => $validated['contact_phone'] ?? null,
                 'customer_ref'       => $validated['customer_ref'] ?? null,
                 'comments'           => $validated['comments'] ?? null,
+                'payment_provider'      => $validated['payment_provider'] ?? null,
+                'payment_channel_code'  => $validated['payment_channel_code'] ?? null,
                 'shipping_company_id'=> $validated['shipping_company_id'] ?? null,
                 'status'             => 'draft',
                 'created_by'         => auth()->user()?->user_id ?? 'system',
@@ -479,14 +481,27 @@ public function showCredit(int $id): JsonResponse
                 $dim2Id = ($item->dimension2_id ?? null) ?: $invoice->dimension2_id;
 
                 // ── COGS / Inventory ──────────────────────────────────────────
-                if ($item && $item->cogs_account && $item->inventory_account) {
+                // An item with no cogs_account/inventory_account configured must
+                // still post COGS — otherwise a real sale (with a real cost, per
+                // the fallback above) silently posts revenue with no matching
+                // expense, understating COGS and overstating profit. Fall back
+                // the same way sales_account already does below: item → company
+                // default (gl_settings.items_*) → a safe hardcoded account.
+                if ($item) {
+                    $cogsAccount = ($item->cogs_account ?: null)
+                        ?: ($glSetting->items_cogs_account ?: null)
+                        ?: '501010';
+                    $inventoryAccount = ($item->inventory_account ?: null)
+                        ?: ($glSetting->items_inventory_account ?: null)
+                        ?: '103039';
+
                     $cogsAmount = round($standardCost * $qty, 4);
                     if ($cogsAmount != 0) {
                         GldTransaction::create([
                             'trans_no'     => $invoice->id,
                             'type'         => StockMovement::TYPE_INVOICE,
                             'tran_date'    => $tranDate,
-                            'account_code' => $item->cogs_account,
+                            'account_code' => $cogsAccount,
                             'reference'    => $invNo,
                             'narration'    => "COGS — {$invoiceItem->description} ({$invNo})",
                             'amount'       => $cogsAmount,
@@ -498,7 +513,7 @@ public function showCredit(int $id): JsonResponse
                             'trans_no'     => $invoice->id,
                             'type'         => StockMovement::TYPE_INVOICE,
                             'tran_date'    => $tranDate,
-                            'account_code' => $item->inventory_account,
+                            'account_code' => $inventoryAccount,
                             'reference'    => $invNo,
                             'narration'    => "Inventory out — {$invoiceItem->description} ({$invNo})",
                             'amount'       => -$cogsAmount,
