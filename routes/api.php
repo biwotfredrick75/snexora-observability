@@ -533,6 +533,7 @@ Route::middleware('auth:api')->group(function () {
 
         // Items
         Route::get('items/search',              [ItemController::class, 'search']);
+        Route::post('items/bulk-no-sale',       [ItemController::class, 'bulkSetNoSale']);
         Route::get('items',                     [ItemController::class, 'index']);
         Route::get('items/{id}/status',         [ItemController::class, 'stockStatus']);
         Route::get('items/{id}/transactions',   [ItemController::class, 'transactions']);
@@ -1549,6 +1550,7 @@ Route::middleware('auth:api')->prefix('hrm')->group(function () {
     Route::post('employees',          [\App\Http\Controllers\Hrm\EmployeeController::class, 'store'])->middleware('permission:manage-hrm');
     Route::put('employees/{id}',      [\App\Http\Controllers\Hrm\EmployeeController::class, 'update'])->middleware('permission:manage-hrm');
     Route::delete('employees/{id}',   [\App\Http\Controllers\Hrm\EmployeeController::class, 'destroy'])->middleware('permission:manage-hrm');
+    Route::post('employees/{id}/convert-to-customer', [\App\Http\Controllers\Hrm\EmployeeController::class, 'convertToCustomer'])->middleware('permission:manage-hrm');
 
     // Departments
     Route::get('departments',         [\App\Http\Controllers\Hrm\DepartmentController::class, 'index'])->middleware('permission:view-hrm');
@@ -1561,6 +1563,70 @@ Route::middleware('auth:api')->prefix('hrm')->group(function () {
     Route::post('job-titles',         [\App\Http\Controllers\Hrm\JobTitleController::class, 'store'])->middleware('permission:manage-hrm');
     Route::put('job-titles/{id}',     [\App\Http\Controllers\Hrm\JobTitleController::class, 'update'])->middleware('permission:manage-hrm');
     Route::delete('job-titles/{id}',  [\App\Http\Controllers\Hrm\JobTitleController::class, 'destroy'])->middleware('permission:manage-hrm');
+
+    // Leave types
+    Route::get('leave-types',         [\App\Http\Controllers\Hrm\LeaveTypeController::class, 'index'])->middleware('permission:view-hrm');
+    Route::post('leave-types',        [\App\Http\Controllers\Hrm\LeaveTypeController::class, 'store'])->middleware('permission:manage-hrm');
+    Route::put('leave-types/{id}',    [\App\Http\Controllers\Hrm\LeaveTypeController::class, 'update'])->middleware('permission:manage-hrm');
+    Route::delete('leave-types/{id}', [\App\Http\Controllers\Hrm\LeaveTypeController::class, 'destroy'])->middleware('permission:manage-hrm');
+
+    // Leave requests
+    Route::get('leave-requests',                [\App\Http\Controllers\Hrm\LeaveRequestController::class, 'index'])->middleware('permission:view-hrm');
+    Route::post('leave-requests',               [\App\Http\Controllers\Hrm\LeaveRequestController::class, 'store'])->middleware('permission:view-hrm');
+    Route::post('leave-requests/{id}/approve',  [\App\Http\Controllers\Hrm\LeaveRequestController::class, 'approve'])->middleware('permission:manage-hrm');
+    Route::post('leave-requests/{id}/reject',   [\App\Http\Controllers\Hrm\LeaveRequestController::class, 'reject'])->middleware('permission:manage-hrm');
+    Route::post('leave-requests/{id}/cancel',   [\App\Http\Controllers\Hrm\LeaveRequestController::class, 'cancel'])->middleware('permission:view-hrm');
+    Route::get('employees/{id}/leave-balance',  [\App\Http\Controllers\Hrm\LeaveRequestController::class, 'balance'])->middleware('permission:view-hrm')->whereNumber('id');
+
+    // Attendance
+    Route::post('attendance/check-in',        [\App\Http\Controllers\Hrm\AttendanceController::class, 'checkIn'])->middleware('permission:view-hrm');
+    Route::post('attendance/check-out',       [\App\Http\Controllers\Hrm\AttendanceController::class, 'checkOut'])->middleware('permission:view-hrm');
+    Route::get('attendance/me',               [\App\Http\Controllers\Hrm\AttendanceController::class, 'me'])->middleware('permission:view-hrm');
+    Route::get('attendance',                  [\App\Http\Controllers\Hrm\AttendanceController::class, 'forDate'])->middleware('permission:view-hrm');
+    Route::post('attendance/manual',          [\App\Http\Controllers\Hrm\AttendanceController::class, 'manual'])->middleware('permission:manage-hrm');
+    Route::get('employees/{id}/attendance',   [\App\Http\Controllers\Hrm\AttendanceController::class, 'history'])->middleware('permission:view-hrm')->whereNumber('id');
+
+    // Onboarding / Offboarding checklists (shared engine, distinguished by ?type=)
+    Route::get('checklist-items',                [\App\Http\Controllers\Hrm\ChecklistItemController::class, 'index'])->middleware('permission:view-hrm');
+    Route::post('checklist-items',               [\App\Http\Controllers\Hrm\ChecklistItemController::class, 'store'])->middleware('permission:manage-hrm');
+    Route::put('checklist-items/{id}',           [\App\Http\Controllers\Hrm\ChecklistItemController::class, 'update'])->middleware('permission:manage-hrm');
+    Route::delete('checklist-items/{id}',        [\App\Http\Controllers\Hrm\ChecklistItemController::class, 'destroy'])->middleware('permission:manage-hrm');
+
+    Route::get('checklist-processes',            [\App\Http\Controllers\Hrm\ChecklistProcessController::class, 'index'])->middleware('permission:view-hrm');
+    Route::post('employees/{id}/checklist/start', [\App\Http\Controllers\Hrm\ChecklistProcessController::class, 'start'])->middleware('permission:manage-hrm')->whereNumber('id');
+    Route::get('employees/{id}/checklist',        [\App\Http\Controllers\Hrm\ChecklistProcessController::class, 'show'])->middleware('permission:view-hrm')->whereNumber('id');
+    Route::post('checklist-tasks/{id}/toggle',    [\App\Http\Controllers\Hrm\ChecklistProcessController::class, 'toggleTask'])->middleware('permission:view-hrm');
+    Route::post('checklist-processes/{id}/complete', [\App\Http\Controllers\Hrm\ChecklistProcessController::class, 'complete'])->middleware('permission:manage-hrm');
+
+    // Performance — goals
+    Route::get('employees/{id}/goals',    [\App\Http\Controllers\Hrm\PerformanceController::class, 'goals'])->middleware('permission:view-hrm')->whereNumber('id');
+    Route::post('employees/{id}/goals',   [\App\Http\Controllers\Hrm\PerformanceController::class, 'storeGoal'])->middleware('permission:manage-hrm')->whereNumber('id');
+    Route::put('goals/{id}',              [\App\Http\Controllers\Hrm\PerformanceController::class, 'updateGoal'])->middleware('permission:manage-hrm');
+    Route::delete('goals/{id}',           [\App\Http\Controllers\Hrm\PerformanceController::class, 'destroyGoal'])->middleware('permission:manage-hrm');
+
+    // Performance — appraisal reviews
+    Route::get('employees/{id}/reviews',       [\App\Http\Controllers\Hrm\PerformanceController::class, 'reviews'])->middleware('permission:view-hrm')->whereNumber('id');
+    Route::post('employees/{id}/reviews',      [\App\Http\Controllers\Hrm\PerformanceController::class, 'storeReview'])->middleware('permission:manage-hrm')->whereNumber('id');
+    Route::put('reviews/{id}',                 [\App\Http\Controllers\Hrm\PerformanceController::class, 'updateReview'])->middleware('permission:manage-hrm');
+    Route::post('reviews/{id}/submit',         [\App\Http\Controllers\Hrm\PerformanceController::class, 'submitReview'])->middleware('permission:manage-hrm');
+    Route::post('reviews/{id}/acknowledge',    [\App\Http\Controllers\Hrm\PerformanceController::class, 'acknowledgeReview'])->middleware('permission:view-hrm');
+
+    // Compensation
+    Route::get('employees/{id}/compensation',        [\App\Http\Controllers\Hrm\CompensationController::class, 'summary'])->middleware('permission:view-hrm')->whereNumber('id');
+    Route::post('employees/{id}/salary-revisions',   [\App\Http\Controllers\Hrm\CompensationController::class, 'reviseSalary'])->middleware('permission:manage-hrm')->whereNumber('id');
+
+    // Employee documents
+    Route::get('employees/{id}/documents',    [\App\Http\Controllers\Hrm\EmployeeDocumentController::class, 'index'])->middleware('permission:view-hrm')->whereNumber('id');
+    Route::post('employees/{id}/documents',   [\App\Http\Controllers\Hrm\EmployeeDocumentController::class, 'store'])->middleware('permission:manage-hrm')->whereNumber('id');
+    Route::delete('documents/{id}',           [\App\Http\Controllers\Hrm\EmployeeDocumentController::class, 'destroy'])->middleware('permission:manage-hrm');
+
+    // HR Letters
+    Route::get('letter-templates',            [\App\Http\Controllers\Hrm\HrLetterController::class, 'templates'])->middleware('permission:view-hrm');
+    Route::post('letter-templates',           [\App\Http\Controllers\Hrm\HrLetterController::class, 'storeTemplate'])->middleware('permission:manage-hrm');
+    Route::put('letter-templates/{id}',       [\App\Http\Controllers\Hrm\HrLetterController::class, 'updateTemplate'])->middleware('permission:manage-hrm');
+    Route::delete('letter-templates/{id}',    [\App\Http\Controllers\Hrm\HrLetterController::class, 'destroyTemplate'])->middleware('permission:manage-hrm');
+    Route::get('employees/{id}/letters',      [\App\Http\Controllers\Hrm\HrLetterController::class, 'forEmployee'])->middleware('permission:view-hrm')->whereNumber('id');
+    Route::post('employees/{id}/letters/{templateId}/generate', [\App\Http\Controllers\Hrm\HrLetterController::class, 'generate'])->middleware('permission:manage-hrm')->whereNumber('id')->whereNumber('templateId');
 });
 
 
@@ -1585,6 +1651,11 @@ Route::middleware('auth:api')->prefix('payroll')->group(function () {
     Route::post('components',                   [PayrollController::class, 'componentsStore'])->middleware('permission:manage-payroll');
     Route::put('components/{id}',               [PayrollController::class, 'componentsUpdate'])->middleware('permission:manage-payroll');
     Route::delete('components/{id}',            [PayrollController::class, 'componentsDestroy'])->middleware('permission:manage-payroll');
+
+    Route::get('employee-components',           [PayrollController::class, 'employeeComponentsIndex'])->middleware('permission:view-payroll');
+    Route::post('employee-components',          [PayrollController::class, 'employeeComponentsStore'])->middleware('permission:manage-payroll');
+    Route::put('employee-components/{id}',      [PayrollController::class, 'employeeComponentsUpdate'])->middleware('permission:manage-payroll');
+    Route::delete('employee-components/{id}',   [PayrollController::class, 'employeeComponentsDestroy'])->middleware('permission:manage-payroll');
 });
 
 

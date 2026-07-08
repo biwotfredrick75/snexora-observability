@@ -4,11 +4,16 @@ namespace App\Http\Controllers\Hrm;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\Customer;
+use App\Models\CustomerBranch;
 use App\Models\Department;
 use App\Models\Employee;
 use App\Models\JobTitle;
+use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class EmployeeController extends Controller
 {
@@ -38,6 +43,8 @@ class EmployeeController extends Controller
             'managers'    => Employee::where('status', '!=', 'terminated')
                 ->orderBy('first_name')
                 ->get(['id', 'emp_no', 'first_name', 'last_name']),
+            'users'            => User::select('user_id', 'real_name')->orderBy('user_id')->get(),
+            'linked_user_ids'  => Employee::whereNotNull('user_id')->pluck('user_id', 'id'),
             'enums' => [
                 'employment_type' => self::EMPLOYMENT_TYPES,
                 'status'          => self::STATUSES,
@@ -50,13 +57,68 @@ class EmployeeController extends Controller
 
     public function show(int $id): JsonResponse
     {
-        $employee = Employee::with(['department', 'jobTitle', 'manager'])->find($id);
+        $employee = Employee::with(['department', 'jobTitle', 'manager', 'customer'])->find($id);
 
         if (! $employee) {
             return ApiResponse::notFound('Employee not found');
         }
 
         return ApiResponse::success($employee, 'Employee retrieved');
+    }
+
+    /**
+     * Create a linked Customer + main Branch from this employee's existing
+     * name/contact/address — for staff who also buy company products, so
+     * they don't need to be re-entered as a separate customer from scratch.
+     * Idempotent: if already linked, just returns the existing customer.
+     */
+    public function convertToCustomer(int $id): JsonResponse
+    {
+        $employee = Employee::with('customer.branches')->find($id);
+
+        if (! $employee) {
+            return ApiResponse::notFound('Employee not found');
+        }
+
+        if ($employee->customer_debtor_no) {
+            return ApiResponse::success($employee, 'Employee is already linked to a customer');
+        }
+
+        $customer = DB::transaction(function () use ($employee) {
+            $num      = Customer::nextCustomerNumber();
+            $debtorNo = sprintf('EMPC-%04d', $num); // debtor_no column is varchar(10)
+
+            $customer = Customer::create([
+                'debtor_no'       => $debtorNo,
+                'customer_number' => $num,
+                'name'            => $employee->full_name,
+                'short_name'      => $employee->emp_no,
+                'address'         => $employee->physical_address,
+                'phone'           => $employee->phone,
+                'email'           => $employee->email,
+                'kra_pin'         => $employee->kra_pin,
+                'general_notes'   => 'Auto-created from employee ' . $employee->emp_no,
+            ]);
+
+            CustomerBranch::create([
+                'debtor_no'       => $customer->debtor_no,
+                'branch_name'     => 'Main',
+                'phone'           => $employee->phone,
+                'deliver_to'      => $employee->full_name,
+                'address'         => $employee->physical_address,
+                'contact_person'  => $employee->full_name,
+                'email'           => $employee->email,
+            ]);
+
+            $employee->update(['customer_debtor_no' => $customer->debtor_no]);
+
+            return $customer;
+        });
+
+        return ApiResponse::created(
+            $employee->fresh(['department', 'jobTitle', 'customer.branches']),
+            "Customer {$customer->debtor_no} created and linked to this employee"
+        );
     }
 
     public function store(Request $request): JsonResponse
@@ -132,7 +194,11 @@ class EmployeeController extends Controller
             'department_id'    => 'nullable|integer|exists:departments,id',
             'job_title_id'     => 'nullable|integer|exists:job_titles,id',
             'manager_id'       => 'nullable|integer|exists:employees,id',
-            'user_id'          => 'nullable|string|max:60',
+            'user_id'          => [
+                'nullable', 'string', 'max:60',
+                'exists:users,user_id',
+                Rule::unique('employees', 'user_id')->ignore($id),
+            ],
             'employment_type'  => 'required|in:' . implode(',', self::EMPLOYMENT_TYPES),
             'hire_date'        => 'nullable|date',
             'end_date'         => 'nullable|date',

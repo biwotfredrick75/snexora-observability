@@ -5,6 +5,7 @@ namespace App\Services\Payroll;
 use App\Models\Employee;
 use App\Models\GldTransaction;
 use App\Models\GlSetting;
+use App\Models\PayrollEmployeeComponent;
 use App\Models\PayrollItem;
 use App\Models\PayrollPayComponent;
 use App\Models\PayrollPeriod;
@@ -65,14 +66,29 @@ class PayrollGenerationService
     {
         $basicSalary = (float) $employee->basic_salary;
 
-        $allowanceComponents = $this->activeComponents('allowance');
-        $deductionComponents = $this->activeComponents('deduction', statutory: false);
+        // component_id => amount, aggregated across the company-wide catalogue and
+        // this employee's individual recurring/one-time items, then written as a
+        // single posting per component below.
+        $allowanceAmounts = [];
+        $deductionAmounts = [];
+
+        foreach ($this->activeComponents('allowance') as $component) {
+            $allowanceAmounts[$component->id] = ($allowanceAmounts[$component->id] ?? 0) + $this->componentAmount($component, $basicSalary);
+        }
+        foreach ($this->activeComponents('deduction', statutory: false) as $component) {
+            $deductionAmounts[$component->id] = ($deductionAmounts[$component->id] ?? 0) + $this->componentAmount($component, $basicSalary);
+        }
+
+        foreach ($this->eligibleEmployeeComponents($employee, $period) as $eItem) {
+            $bucket = $eItem->component->category === 'allowance' ? 'allowanceAmounts' : 'deductionAmounts';
+            ${$bucket}[$eItem->component_id] = (${$bucket}[$eItem->component_id] ?? 0) + (float) $eItem->amount;
+        }
 
         $autoAllowances = 0.0;
-        foreach ($allowanceComponents as $component) {
-            $amount = $this->componentAmount($component, $basicSalary);
+        foreach ($allowanceAmounts as $componentId => $amount) {
+            $amount = round($amount, 2);
             PayrollPosting::updateOrCreate(
-                ['payroll_period_id' => $period->id, 'employee_id' => $employee->id, 'component_id' => $component->id],
+                ['payroll_period_id' => $period->id, 'employee_id' => $employee->id, 'component_id' => $componentId],
                 ['amount' => $amount, 'is_auto' => true]
             );
             $autoAllowances += $amount;
@@ -102,21 +118,13 @@ class PayrollGenerationService
             );
         }
 
-        $autoDeductions = 0.0;
-        foreach ($deductionComponents as $component) {
-            $amount = $this->componentAmount($component, $basicSalary);
-            PayrollPosting::updateOrCreate(
-                ['payroll_period_id' => $period->id, 'employee_id' => $employee->id, 'component_id' => $component->id],
-                ['amount' => $amount, 'is_auto' => true]
-            );
-            $autoDeductions += $amount;
-        }
-
         // External agrovet/service-provider (ESP) sales not yet deducted from this employee.
-        // Posted via its own (deliberately inactive — see espDeductionComponent()) pay
-        // component so it doesn't get double-picked-up by the activeComponents() loop above.
-        $espComponent  = $this->espDeductionComponent();
-        $espDeduction  = round((float) DB::table('esp_farmer_sales')
+        // Folded into the same component-amount map so it's posted (and summed) exactly
+        // like any other deduction; its component is deliberately inactive — see
+        // espDeductionComponent() — so it doesn't get double-picked-up by the
+        // activeComponents() loop above.
+        $espComponent = $this->espDeductionComponent();
+        $espDeduction = round((float) DB::table('esp_farmer_sales')
             ->where('party_type', 'employee')
             ->where('party_id', $employee->id)
             ->where('party_deducted', false)
@@ -124,16 +132,18 @@ class PayrollGenerationService
             ->sum('total_amount'), 2);
 
         if ($espDeduction > 0) {
-            PayrollPosting::updateOrCreate(
-                ['payroll_period_id' => $period->id, 'employee_id' => $employee->id, 'component_id' => $espComponent->id],
-                ['amount' => $espDeduction, 'is_auto' => true]
-            );
-        } else {
-            PayrollPosting::where([
-                'payroll_period_id' => $period->id, 'employee_id' => $employee->id, 'component_id' => $espComponent->id,
-            ])->delete();
+            $deductionAmounts[$espComponent->id] = ($deductionAmounts[$espComponent->id] ?? 0) + $espDeduction;
         }
-        $autoDeductions += $espDeduction;
+
+        $autoDeductions = 0.0;
+        foreach ($deductionAmounts as $componentId => $amount) {
+            $amount = round($amount, 2);
+            PayrollPosting::updateOrCreate(
+                ['payroll_period_id' => $period->id, 'employee_id' => $employee->id, 'component_id' => $componentId],
+                ['amount' => $amount, 'is_auto' => true]
+            );
+            $autoDeductions += $amount;
+        }
 
         $otherDeductions = round($autoDeductions, 2);
         $statutoryTotal  = round($statutory['paye'] + $statutory['shif'] + $statutory['nssf'] + $statutory['housing_levy'], 2);
@@ -181,6 +191,15 @@ class PayrollGenerationService
         if ($category === 'allowance') $query->where('is_statutory', false);
 
         return $this->componentCache[$key] = $query->get()->all();
+    }
+
+    /** This employee's individual pay items (loans, one-off bonuses, …) active for this period. */
+    private function eligibleEmployeeComponents(Employee $employee, PayrollPeriod $period)
+    {
+        return PayrollEmployeeComponent::with('component')
+            ->where('employee_id', $employee->id)
+            ->eligibleFor($period->period_start, $period->period_end)
+            ->get();
     }
 
     private function statutoryComponent(string $computationType): ?PayrollPayComponent
@@ -311,9 +330,32 @@ class PayrollGenerationService
             $period->update(['status' => 'posted', 'posted_by' => $userId, 'posted_at' => now()]);
 
             $this->markEspSalesDeducted($period);
+            $this->consumeEmployeeComponentInstallments($period);
         });
 
         return $period->fresh();
+    }
+
+    /**
+     * Consume one installment for every employee pay item with a fixed installment
+     * count that was included in this period (re-derives eligibility the same way
+     * generate() did — safe as long as nothing edited eligibility between generate
+     * and post, same assumption the rest of this flow already makes). Indefinite
+     * items (no total_installments) are left untouched; they run until deactivated.
+     */
+    private function consumeEmployeeComponentInstallments(PayrollPeriod $period): void
+    {
+        $items = PayrollEmployeeComponent::whereNotNull('total_installments')
+            ->eligibleFor($period->period_start, $period->period_end)
+            ->get();
+
+        foreach ($items as $item) {
+            $used = $item->installments_used + 1;
+            $item->update([
+                'installments_used' => $used,
+                'active'            => $used < $item->total_installments,
+            ]);
+        }
     }
 
     /**

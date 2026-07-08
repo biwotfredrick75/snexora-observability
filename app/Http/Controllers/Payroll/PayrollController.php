@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Payroll;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\Employee;
+use App\Models\PayrollEmployeeComponent;
 use App\Models\PayrollItem;
 use App\Models\PayrollPayComponent;
 use App\Models\PayrollPeriod;
@@ -199,6 +200,85 @@ class PayrollController extends Controller
         }
         $component->delete();
         return ApiResponse::deleted('Pay component deleted');
+    }
+
+    // ── Employee recurring/one-time pay items ───────────────────────────────────
+    // Per-employee earnings/deductions (e.g. a loan for one employee) layered on
+    // top of the company-wide catalogue above. Picked up automatically by
+    // PayrollGenerationService while active/in range/installments remain.
+
+    public function employeeComponentsIndex(Request $request): JsonResponse
+    {
+        $query = PayrollEmployeeComponent::with(['employee:id,full_name', 'component:id,name,category'])
+            ->orderByDesc('id');
+
+        if ($request->filled('employee_id')) $query->where('employee_id', $request->employee_id);
+        if ($request->filled('active')) $query->where('active', (bool) $request->boolean('active'));
+
+        return ApiResponse::success($query->get(), 'Employee pay items retrieved');
+    }
+
+    public function employeeComponentsStore(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'employee_id'         => 'required|integer|exists:employees,id',
+            'component_id'        => 'required|integer|exists:payroll_pay_components,id',
+            'amount'              => 'required|numeric|min:0.01',
+            'is_recurring'        => 'boolean',
+            'start_date'          => 'required|date',
+            'end_date'            => 'nullable|date|after_or_equal:start_date',
+            'total_installments'  => 'nullable|integer|min:1',
+            'notes'               => 'nullable|string|max:255',
+        ]);
+
+        $component = PayrollPayComponent::findOrFail($data['component_id']);
+        if ($component->is_statutory) {
+            return ApiResponse::error('Statutory components are computed automatically and cannot be assigned manually.', 422);
+        }
+        if ($component->name === 'External Provider Purchases') {
+            return ApiResponse::error('This component is managed automatically from ESP settlements and cannot be assigned manually.', 422);
+        }
+
+        // A one-time item is just a recurring item capped at a single installment.
+        if (! ($data['is_recurring'] ?? true)) {
+            $data['total_installments'] = 1;
+        }
+        $data['installments_used'] = 0;
+        $data['active']            = true;
+        $data['created_by']        = auth()->id();
+
+        $item = PayrollEmployeeComponent::create($data);
+
+        return ApiResponse::created($item->load(['employee:id,full_name', 'component:id,name,category']), 'Employee pay item created');
+    }
+
+    public function employeeComponentsUpdate(Request $request, int $id): JsonResponse
+    {
+        $item = PayrollEmployeeComponent::findOrFail($id);
+
+        $data = $request->validate([
+            'amount'              => 'sometimes|numeric|min:0.01',
+            'is_recurring'        => 'boolean',
+            'start_date'          => 'sometimes|date',
+            'end_date'            => 'nullable|date|after_or_equal:start_date',
+            'total_installments'  => 'nullable|integer|min:1',
+            'active'              => 'boolean',
+            'notes'               => 'nullable|string|max:255',
+        ]);
+
+        if (isset($data['is_recurring']) && ! $data['is_recurring']) {
+            $data['total_installments'] = 1;
+        }
+
+        $item->update($data);
+
+        return ApiResponse::updated($item->load(['employee:id,full_name', 'component:id,name,category']), 'Employee pay item updated');
+    }
+
+    public function employeeComponentsDestroy(int $id): JsonResponse
+    {
+        PayrollEmployeeComponent::findOrFail($id)->delete();
+        return ApiResponse::deleted('Employee pay item deleted');
     }
 
     // ── Statutory & summary reports ─────────────────────────────────────────────

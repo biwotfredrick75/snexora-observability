@@ -13,7 +13,7 @@ class Employee extends Model
         'gender', 'date_of_birth', 'national_id',
         'kra_pin', 'nssf_no', 'shif_no', 'nita_no', 'helb_no',
         'email', 'phone', 'physical_address',
-        'department_id', 'job_title_id', 'manager_id', 'user_id',
+        'department_id', 'job_title_id', 'manager_id', 'user_id', 'customer_debtor_no',
         'employment_type', 'hire_date', 'end_date', 'status',
         'basic_salary', 'payment_method', 'bank_name', 'bank_branch', 'bank_account',
         'notes',
@@ -55,5 +55,10 @@ class Employee extends Model
     public function payrollItems(): HasMany
     {
         return $this->hasMany(PayrollItem::class);
+    }
+
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class, 'customer_debtor_no', 'debtor_no');
     }
 }

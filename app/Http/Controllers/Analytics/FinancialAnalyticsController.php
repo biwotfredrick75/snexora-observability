@@ -19,12 +19,21 @@ class FinancialAnalyticsController extends Controller
         $priorEnd    = $now->copy()->subDays(60)->toDateString();
         $sixMoBeg    = $now->copy()->subMonths(6)->startOfMonth()->toDateString();
 
-        // ── Monthly revenue ──────────────────────────────────────────────────
+        // ── Monthly revenue (net of credit notes) ─────────────────────────────
         $monthlyRevRaw = DB::table('sales_invoices')
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->where('invoice_date', '>=', $sixMoBeg)
             ->selectRaw("DATE_FORMAT(invoice_date,'%Y-%m') AS month, SUM(amount_total) AS revenue, COUNT(*) AS inv_count")
             ->groupBy(DB::raw("DATE_FORMAT(invoice_date,'%Y-%m')"))
+            ->orderBy('month')
+            ->get()
+            ->keyBy('month');
+
+        $monthlyCreditNotesRaw = DB::table('credit_notes')
+            ->whereIn('status', ['placed'])
+            ->where('cn_date', '>=', $sixMoBeg)
+            ->selectRaw("DATE_FORMAT(cn_date,'%Y-%m') AS month, SUM(amount_total) AS credit_notes")
+            ->groupBy(DB::raw("DATE_FORMAT(cn_date,'%Y-%m')"))
             ->orderBy('month')
             ->get()
             ->keyBy('month');
@@ -60,13 +69,14 @@ class FinancialAnalyticsController extends Controller
 
         // ── Build all months in range ────────────────────────────────────────
         $allMonthKeys = collect($monthlyRevRaw->keys())
+            ->merge($monthlyCreditNotesRaw->keys())
             ->merge($monthlySpendRaw->keys())
             ->merge($monthlyCashIn->keys())
             ->merge($monthlyCashOut->keys())
             ->unique()->sort()->values();
 
-        $monthly = $allMonthKeys->map(function ($m) use ($monthlyRevRaw, $monthlySpendRaw, $monthlyCashIn, $monthlyCashOut) {
-            $rev    = (float) ($monthlyRevRaw->get($m)?->revenue ?? 0);
+        $monthly = $allMonthKeys->map(function ($m) use ($monthlyRevRaw, $monthlyCreditNotesRaw, $monthlySpendRaw, $monthlyCashIn, $monthlyCashOut) {
+            $rev    = (float) ($monthlyRevRaw->get($m)?->revenue ?? 0) - (float) ($monthlyCreditNotesRaw->get($m)?->credit_notes ?? 0);
             $spend  = (float) ($monthlySpendRaw->get($m)?->spend ?? 0);
             $cin    = (float) ($monthlyCashIn->get($m)?->cash_in ?? 0);
             $cout   = (float) ($monthlyCashOut->get($m)?->cash_out ?? 0);
@@ -87,11 +97,18 @@ class FinancialAnalyticsController extends Controller
             ];
         })->values()->all();
 
-        // ── 60-day totals ────────────────────────────────────────────────────
+        // ── 60-day totals (revenue net of credit notes) ──────────────────────
         $revenue60 = (float) DB::table('sales_invoices')
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->whereBetween('invoice_date', [$period60Beg, $period60End])
             ->sum('amount_total');
+
+        $creditNotes60 = (float) DB::table('credit_notes')
+            ->whereIn('status', ['placed'])
+            ->whereBetween('cn_date', [$period60Beg, $period60End])
+            ->sum('amount_total');
+
+        $revenue60 -= $creditNotes60;
 
         $spend60 = (float) DB::table('purchase_orders')
             ->whereNotIn('status', ['draft', 'cancelled', 'rejected'])
@@ -108,11 +125,18 @@ class FinancialAnalyticsController extends Controller
             ->whereBetween('payment_date', [$period60Beg, $period60End])
             ->sum('amount');
 
-        // ── Prior-period revenue for growth calc ─────────────────────────────
+        // ── Prior-period revenue for growth calc (net of credit notes) ───────
         $priorRevenue = (float) DB::table('sales_invoices')
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->whereBetween('invoice_date', [$priorBeg, $priorEnd])
             ->sum('amount_total');
+
+        $priorCreditNotes = (float) DB::table('credit_notes')
+            ->whereIn('status', ['placed'])
+            ->whereBetween('cn_date', [$priorBeg, $priorEnd])
+            ->sum('amount_total');
+
+        $priorRevenue -= $priorCreditNotes;
 
         $priorSpend = (float) DB::table('purchase_orders')
             ->whereNotIn('status', ['draft', 'cancelled', 'rejected'])

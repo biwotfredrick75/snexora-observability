@@ -27,7 +27,16 @@ class ItemController extends Controller
             ->orderBy('description');
 
         if (! $allItems) {
-            $query->where('no_sale', false);
+            // whereNotIn on a nullable column would silently exclude every
+            // row with category_id = NULL (SQL's NOT IN + NULL trap) — guard
+            // it so only items under a category explicitly excluded are hidden.
+            $query->where('no_sale', false)
+                ->where(function ($qb) {
+                    $qb->whereNull('category_id')
+                        ->orWhereNotIn('category_id', function ($sub) {
+                            $sub->select('id')->from('item_categories')->where('exclude_from_sales', true);
+                        });
+                });
         }
 
         if ($q !== '') {
@@ -263,6 +272,27 @@ class ItemController extends Controller
         $item = Item::findOrFail($stockId);
         $item->update(['inactive' => true]);
         return ApiResponse::deleted('Item deactivated');
+    }
+
+    /**
+     * Bulk-flag a set of items as salable/non-salable in one action —
+     * used by the Items list's "Mark as Non-Salable" bulk selection tool,
+     * since reclassifying items one-by-one via the edit form doesn't scale.
+     */
+    public function bulkSetNoSale(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'stock_ids'   => 'required|array|min:1',
+            'stock_ids.*' => 'string|exists:items,stock_id',
+            'no_sale'     => 'required|boolean',
+        ]);
+
+        $updated = Item::whereIn('stock_id', $data['stock_ids'])->update(['no_sale' => $data['no_sale']]);
+
+        return ApiResponse::success(
+            ['updated' => $updated],
+            $updated . ' item(s) marked as ' . ($data['no_sale'] ? 'non-salable' : 'salable')
+        );
     }
 
     public function stockStatus(string $stockId): JsonResponse

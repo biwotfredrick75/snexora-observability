@@ -51,8 +51,7 @@ class PosController extends Controller
             return ApiResponse::error('Query is required', 400);
         }
 
-        $item = Item::where('inactive', false)
-            ->where('no_sale', false)
+        $item = Item::salable()
             ->where(function ($query) use ($q) {
                 $query->where('stock_id', $q)
                       ->orWhere('bar_code', $q)
@@ -105,7 +104,7 @@ class PosController extends Controller
             ? DB::table('sales_types')->where('id', $salesTypeId)->value('type_name')
             : null;
 
-        $query = Item::where('inactive', false)->where('no_sale', false);
+        $query = Item::salable();
 
         if ($q !== '') {
             $query->where(function ($sub) use ($q) {
@@ -180,7 +179,7 @@ class PosController extends Controller
         $categoryId = $request->get('category_id', '');
         $q          = trim($request->get('q', ''));
 
-        $query = Item::where('inactive', false)->where('no_sale', false);
+        $query = Item::salable();
 
         if ($q !== '') {
             $query->where(function ($sub) use ($q) {

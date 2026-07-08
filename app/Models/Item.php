@@ -60,4 +60,18 @@ class Item extends Model
     {
         return $this->belongsTo(ItemCategory::class, 'category_id');
     }
+
+    /**
+     * Items eligible to appear in sales pickers: not individually flagged
+     * no_sale, not inactive, and not under a category flagged
+     * exclude_from_sales. Uses whereDoesntHave (not whereHas) so items with
+     * no category, or an orphaned/invalid category_id, are still included —
+     * only a category that actually exists and is excluded hides them.
+     */
+    public function scopeSalable($query)
+    {
+        return $query->where('no_sale', false)
+            ->where('inactive', false)
+            ->whereDoesntHave('category', fn ($q) => $q->where('exclude_from_sales', true));
+    }
 }

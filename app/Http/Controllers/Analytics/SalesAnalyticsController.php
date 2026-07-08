@@ -26,7 +26,7 @@ class SalesAnalyticsController extends Controller
 
         $rawRows = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$histFrom, $histTo])
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->selectRaw('CAST(invoice_date AS DATE) AS date, SUM(amount_total) AS amount, COUNT(*) AS inv_count')
             ->groupBy(DB::raw('CAST(invoice_date AS DATE)'))
             ->orderBy('date')
@@ -112,14 +112,14 @@ class SalesAnalyticsController extends Controller
         // Current period summary
         $current = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$from, $to])
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->selectRaw('SUM(amount_total) AS amount, COUNT(*) AS inv_count, COUNT(DISTINCT debtor_no) AS customer_count')
             ->first();
 
         // Prior period summary
         $prior = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$prev, $prevTo])
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->selectRaw('SUM(amount_total) AS amount, COUNT(*) AS inv_count, COUNT(DISTINCT debtor_no) AS customer_count')
             ->first();
 
@@ -139,7 +139,7 @@ class SalesAnalyticsController extends Controller
         $topCustomers = DB::table('sales_invoices as si')
             ->join('customers as c', 'c.debtor_no', '=', 'si.debtor_no')
             ->whereBetween('si.invoice_date', [$from, $to])
-            ->whereIn('si.status', ['posted', 'paid', 'partial'])
+            ->whereIn('si.status', ['placed'])
             ->selectRaw('si.debtor_no, c.name, SUM(si.amount_total) AS amount, COUNT(*) AS inv_count')
             ->groupBy('si.debtor_no', 'c.name')
             ->orderByDesc('amount')
@@ -149,7 +149,7 @@ class SalesAnalyticsController extends Controller
         // Prior period per customer for growth calculation
         $custPrior = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$prev, $prevTo])
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->selectRaw('debtor_no, SUM(amount_total) AS amount_prev')
             ->groupBy('debtor_no')
             ->get()
@@ -180,7 +180,7 @@ class SalesAnalyticsController extends Controller
             ->join('customer_branches as cb', 'cb.id', '=', 'cb_min.min_id')
             ->leftJoin('sales_areas as sa', 'sa.id', '=', 'cb.sales_area_id')
             ->whereBetween('si.invoice_date', [$from, $to])
-            ->whereIn('si.status', ['posted', 'paid', 'partial'])
+            ->whereIn('si.status', ['placed'])
             ->selectRaw("COALESCE(sa.area_name, 'Unassigned') AS area_name, SUM(si.amount_total) AS amount, COUNT(*) AS inv_count")
             ->groupBy('sa.id', 'sa.area_name')
             ->orderByDesc('amount')
@@ -190,14 +190,14 @@ class SalesAnalyticsController extends Controller
         $avgDaysToPayment = DB::table('sales_invoices as si')
             ->join('debtor_allocations as da', 'da.inv_id', '=', 'si.id')
             ->whereBetween('si.invoice_date', [$from, $to])
-            ->whereIn('si.status', ['paid', 'partial'])
+            ->whereIn('si.status', ['placed'])
             ->selectRaw('AVG(DATEDIFF(da.allocated_date, si.invoice_date)) AS avg_days')
             ->value('avg_days');
 
         // Daily revenue for anomaly detection
         $dailyRows = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$from, $to])
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->selectRaw('CAST(invoice_date AS DATE) AS date, SUM(amount_total) AS amount')
             ->groupBy(DB::raw('CAST(invoice_date AS DATE)'))
             ->orderBy('date')
@@ -241,20 +241,20 @@ class SalesAnalyticsController extends Controller
 
         $cur = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$from, $to])
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->selectRaw('SUM(amount_total) AS amount, COUNT(*) AS inv_count, COUNT(DISTINCT debtor_no) AS customers')
             ->first();
 
         $prv = DB::table('sales_invoices')
             ->whereBetween('invoice_date', [$prev, $prevTo])
-            ->whereIn('status', ['posted', 'paid', 'partial'])
+            ->whereIn('status', ['placed'])
             ->selectRaw('SUM(amount_total) AS amount, COUNT(*) AS inv_count')
             ->first();
 
         $topCustomers = DB::table('sales_invoices as si')
             ->join('customers as c', 'c.debtor_no', '=', 'si.debtor_no')
             ->whereBetween('si.invoice_date', [$from, $to])
-            ->whereIn('si.status', ['posted', 'paid', 'partial'])
+            ->whereIn('si.status', ['placed'])
             ->selectRaw('c.name, SUM(si.amount_total) AS amount')
             ->groupBy('si.debtor_no', 'c.name')
             ->orderByDesc('amount')
@@ -264,6 +264,7 @@ class SalesAnalyticsController extends Controller
         $avgDays = DB::table('sales_invoices as si')
             ->join('debtor_allocations as da', 'da.inv_id', '=', 'si.id')
             ->whereBetween('si.invoice_date', [$from, $to])
+            ->whereIn('si.status', ['placed'])
             ->selectRaw('AVG(DATEDIFF(da.allocated_date, si.invoice_date)) AS avg_days')
             ->value('avg_days');
 

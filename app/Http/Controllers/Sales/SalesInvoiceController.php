@@ -360,14 +360,36 @@ public function showCredit(int $id): JsonResponse
         $company   = DB::table('company_preferences')->first();
         $glSetting = DB::table('gl_settings')->first();
 
-        $shortfalls = [];
+        $shortfalls  = [];
+        $missingCost = [];
 
         try {
-            $placed = DB::transaction(function () use ($invoice, $company, $glSetting, &$shortfalls) {
+            $placed = DB::transaction(function () use ($invoice, $company, $glSetting, &$shortfalls, &$missingCost) {
             // Resolve stock location code for movements; fall back to first active location
             $locCode = $invoice->location_id
                 ? DB::table('inventory_locations')->where('id', $invoice->location_id)->value('code')
                 : DB::table('inventory_locations')->where('inactive', 0)->value('code');
+
+            // ── Buying-price check — an item can't post accurate COGS/gross profit
+            // without a known cost, so refuse to place the invoice until it's set ──
+            foreach ($invoice->items as $invoiceItem) {
+                $mbFlag = DB::table('items')->where('stock_id', $invoiceItem->stock_id)->value('mb_flag');
+                if ($mbFlag === 'S') continue; // service items carry no buying price
+
+                $cost = (float) ($invoiceItem->standard_cost ?? 0);
+                if ($cost <= 0) {
+                    $cost = (float) DB::table('items')
+                        ->where('stock_id', $invoiceItem->stock_id)
+                        ->selectRaw('COALESCE(purchase_cost,0) + COALESCE(material_cost,0) + COALESCE(labour_cost,0) + COALESCE(overhead_cost,0) as total_cost')
+                        ->value('total_cost');
+                }
+                if ($cost <= 0) {
+                    $missingCost[] = $invoiceItem->stock_id;
+                }
+            }
+            if (!empty($missingCost)) {
+                throw new \RuntimeException('missing_buying_price');
+            }
 
             // ── Stock availability check — a sale must not silently no-op when
             // the chosen location doesn't actually hold the stock being sold ──
@@ -609,6 +631,13 @@ public function showCredit(int $id): JsonResponse
                 );
                 return ApiResponse::error(
                     'Insufficient stock at the selected location — ' . implode('; ', $lines),
+                    422
+                );
+            }
+            if ($e->getMessage() === 'missing_buying_price') {
+                return ApiResponse::error(
+                    'Cannot place invoice — missing buying price for: ' . implode(', ', $missingCost)
+                        . '. Set a purchase cost (or material/labour/overhead cost) for these items before selling them.',
                     422
                 );
             }
