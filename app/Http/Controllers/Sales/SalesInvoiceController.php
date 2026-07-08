@@ -450,9 +450,16 @@ public function showCredit(int $id): JsonResponse
                     }
                 }
 
-                $item = DB::table('items')->where('stock_id', $invoiceItem->stock_id)
-                    ->select('cogs_account', 'inventory_account', 'sales_account',
-                             'tax_type_id', 'dimension_id', 'dimension2_id', 'mb_flag')
+                $item = DB::table('items')
+                    ->leftJoin('item_categories', 'item_categories.id', '=', 'items.category_id')
+                    ->where('items.stock_id', $invoiceItem->stock_id)
+                    ->select(
+                        'items.cogs_account', 'items.inventory_account', 'items.sales_account',
+                        'items.tax_type_id', 'items.dimension_id', 'items.dimension2_id', 'items.mb_flag',
+                        'item_categories.cogs_gl_account as cat_cogs_account',
+                        'item_categories.inventory_gl_account as cat_inventory_account',
+                        'item_categories.sales_gl_account as cat_sales_account'
+                    )
                     ->first();
 
                 // ── Stock movement: goods out — FIFO batch deduction ──────────
@@ -485,13 +492,15 @@ public function showCredit(int $id): JsonResponse
                 // still post COGS — otherwise a real sale (with a real cost, per
                 // the fallback above) silently posts revenue with no matching
                 // expense, understating COGS and overstating profit. Fall back
-                // the same way sales_account already does below: item → company
-                // default (gl_settings.items_*) → a safe hardcoded account.
+                // item → item's category → company default (gl_settings.items_*)
+                // → a safe hardcoded account, the same chain sales_account uses.
                 if ($item) {
                     $cogsAccount = ($item->cogs_account ?: null)
+                        ?: ($item->cat_cogs_account ?: null)
                         ?: ($glSetting->items_cogs_account ?: null)
                         ?: '501010';
                     $inventoryAccount = ($item->inventory_account ?: null)
+                        ?: ($item->cat_inventory_account ?: null)
                         ?: ($glSetting->items_inventory_account ?: null)
                         ?: '103039';
 
@@ -527,6 +536,7 @@ public function showCredit(int $id): JsonResponse
                 // ── Revenue: Sales / Tax / Discount ───────────────────────────
                 if ($item) {
                     $salesAccount   = ($item->sales_account ?: null)
+                        ?: ($item->cat_sales_account ?: null)
                         ?: ($glSetting->items_sales_account ?: null)
                         ?: ($glSetting->sales_account ?: null)
                         ?: 'SALES_REVENUE';
