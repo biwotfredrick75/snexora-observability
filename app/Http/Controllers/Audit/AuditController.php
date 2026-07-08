@@ -149,11 +149,28 @@ class AuditController extends Controller
             ])->values(),
         ];
 
-        $overCreditLimit = DB::table('customers')
-            ->where('credit_limit', '>', 0)
-            ->whereRaw('current_credit > credit_limit')
-            ->select('debtor_no', 'name', 'credit_limit', 'current_credit')
-            ->orderByRaw('current_credit - credit_limit DESC')
+        // current_credit on the customers table is stale demo-seed data, never
+        // updated by invoicing/payments (see CustomerController) — compute the
+        // real outstanding exposure here too: placed invoices minus allocations.
+        // (HAVING must reference the `current_credit` select alias, not the raw
+        // COALESCE expression again — MySQL can't resolve joined-subquery columns
+        // in HAVING without an outer GROUP BY.)
+        $invoicedByDebtor = DB::table('sales_invoices')
+            ->select('debtor_no', DB::raw('SUM(amount_total) as invoiced_total'))
+            ->where('status', 'placed')
+            ->groupBy('debtor_no');
+
+        $allocatedByDebtor = DB::table('debtor_allocations')
+            ->select('debtor_no', DB::raw('SUM(amount) as allocated_total'))
+            ->groupBy('debtor_no');
+
+        $overCreditLimit = DB::table('customers as c')
+            ->leftJoinSub($invoicedByDebtor, 'inv', 'inv.debtor_no', '=', 'c.debtor_no')
+            ->leftJoinSub($allocatedByDebtor, 'alloc', 'alloc.debtor_no', '=', 'c.debtor_no')
+            ->where('c.credit_limit', '>', 0)
+            ->selectRaw('c.debtor_no, c.name, c.credit_limit, (COALESCE(inv.invoiced_total, 0) - COALESCE(alloc.allocated_total, 0)) as current_credit')
+            ->havingRaw('current_credit > c.credit_limit')
+            ->orderByRaw('(current_credit - c.credit_limit) DESC')
             ->get();
 
         $checks[] = [
