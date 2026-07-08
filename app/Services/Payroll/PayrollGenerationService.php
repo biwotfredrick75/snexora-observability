@@ -3,6 +3,7 @@
 namespace App\Services\Payroll;
 
 use App\Models\Employee;
+use App\Models\GlAccount;
 use App\Models\GldTransaction;
 use App\Models\GlSetting;
 use App\Models\PayrollEmployeeComponent;
@@ -314,6 +315,49 @@ class PayrollGenerationService
             }
 
             $otherDeductionsTotal = round((float) $period->total_deductions, 2);
+            $postedDeductionsTotal = 0.0;
+
+            if ($otherDeductionsTotal > 0) {
+                $byComponent = DB::table('payroll_postings')
+                    ->join('payroll_pay_components', 'payroll_pay_components.id', '=', 'payroll_postings.component_id')
+                    ->where('payroll_postings.payroll_period_id', $period->id)
+                    ->where('payroll_pay_components.category', 'deduction')
+                    ->where('payroll_pay_components.is_statutory', false)
+                    ->groupBy('payroll_postings.component_id', 'payroll_pay_components.name', 'payroll_pay_components.gl_account_id')
+                    ->havingRaw('SUM(payroll_postings.amount) != 0')
+                    ->select('payroll_postings.component_id', 'payroll_pay_components.name', 'payroll_pay_components.gl_account_id')
+                    ->selectRaw('SUM(payroll_postings.amount) as total')
+                    ->get();
+
+                foreach ($byComponent as $row) {
+                    $amount = round((float) $row->total, 2);
+                    $accountCode = $row->gl_account_id
+                        ? (GlAccount::find($row->gl_account_id)?->code ?: '230015')
+                        : '230015';
+
+                    GldTransaction::create([
+                        'trans_no' => $period->id, 'type' => self::GL_TYPE, 'tran_date' => $tranDate,
+                        'account_code' => $accountCode, 'reference' => $ref,
+                        'narration' => "{$row->name} payable — {$ref}", 'amount' => -$amount,
+                        'created_by' => $userId,
+                    ]);
+                    $postedDeductionsTotal += $amount;
+                }
+
+                // Any gap between total_deductions and what the per-component loop above
+                // accounted for (e.g. a manual net-pay adjustment not tied to a component)
+                // is posted here so the journal always balances regardless of its source.
+                $unallocated = round($otherDeductionsTotal - $postedDeductionsTotal, 2);
+                if (abs($unallocated) > 0.005) {
+                    GldTransaction::create([
+                        'trans_no' => $period->id, 'type' => self::GL_TYPE, 'tran_date' => $tranDate,
+                        'account_code' => '230015', 'reference' => $ref,
+                        'narration' => "Other deductions payable — {$ref}", 'amount' => -$unallocated,
+                        'created_by' => $userId,
+                    ]);
+                }
+            }
+
             $netPayable = round(
                 (float) $period->total_gross - (float) $period->total_paye - (float) $period->total_shif
                 - (float) $period->total_nssf - (float) $period->total_housing_levy - $otherDeductionsTotal,
