@@ -130,11 +130,24 @@ class StockMovementService
         $baseUniqueKey = $shared['unique_key'] ?? null;
         $tranDate      = $shared['tran_date'];
 
+        // Batches (and legacy unbatched stock) can have no captured inbound cost —
+        // e.g. an opening balance or adjustment that never recorded a price. Rather
+        // than let the sale's outbound movement (and therefore its COGS) post as
+        // zero, fall back to the item's standard cost — computed lazily and cached
+        // per call since every zero-cost batch for this item needs the same value.
+        $fallbackCost = null;
+        $resolveCost  = function () use (&$fallbackCost, $stockId) {
+            return $fallbackCost ??= self::standardCost($stockId);
+        };
+
         foreach (self::availableBatches($stockId, $locCode) as $batch) {
             if ($needed <= 0) break;
 
             $take      = min((float) $batch->remaining_qty, $needed);
             $unitCost  = (float) ($batch->unit_cost ?? 0);
+            if ($unitCost <= 0) {
+                $unitCost = $resolveCost();
+            }
 
             StockMovement::create(array_merge($boilerplate, $shared, [
                 'stock_id'      => $stockId,
@@ -159,11 +172,14 @@ class StockMovementService
                 ->sum('qty');
 
             if ($unbatched > 0) {
-                $take = min($unbatched, $needed);
+                $take     = min($unbatched, $needed);
+                $unitCost = $resolveCost();
                 StockMovement::create(array_merge($boilerplate, $shared, [
                     'stock_id'      => $stockId,
                     'loc_code'      => $locCode,
                     'qty'           => -$take,
+                    'price'         => $unitCost,
+                    'standard_cost' => $unitCost,
                     'batch_no'      => '',
                     'date_moved'    => $tranDate,
                     'unique_key'    => $baseUniqueKey ? "{$baseUniqueKey}-UNBATCHED" : null,
@@ -177,6 +193,9 @@ class StockMovementService
         // the shortfall silently vanishing.
         if ($needed > 0 && $allowNegative) {
             $unitCost = self::weightedAveragePrice($stockId, $locCode);
+            if ($unitCost <= 0) {
+                $unitCost = $resolveCost();
+            }
             StockMovement::create(array_merge($boilerplate, $shared, [
                 'stock_id'      => $stockId,
                 'loc_code'      => $locCode,

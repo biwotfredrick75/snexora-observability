@@ -106,6 +106,8 @@ class SalesInvoiceController extends Controller
             'contact_phone'   => 'nullable|string|max:30',
             'customer_ref'    => 'nullable|string|max:60',
             'comments'        => 'nullable|string',
+            'payment_provider'     => 'nullable|string|in:mpesa,bank,cash,cheque',
+            'payment_channel_code' => 'nullable|string|max:20|exists:gl_accounts,code',
             'shipping_company_id' => 'nullable|integer',
             'items'                => 'required|array|min:1',
             'items.*.stock_id'     => 'required|string|max:20',
@@ -337,6 +339,8 @@ public function showCredit(int $id): JsonResponse
             'contact_phone'   => 'nullable|string|max:30',
             'customer_ref'    => 'nullable|string|max:60',
             'comments'        => 'nullable|string',
+            'payment_provider'     => 'nullable|string|in:mpesa,bank,cash,cheque',
+            'payment_channel_code' => 'nullable|string|max:20|exists:gl_accounts,code',
             'shipping_company_id' => 'nullable|integer',
             'branch_id'       => 'nullable|integer',
         ]);
@@ -434,6 +438,14 @@ public function showCredit(int $id): JsonResponse
                         ->selectRaw('COALESCE(purchase_cost,0) + COALESCE(material_cost,0) + COALESCE(labour_cost,0) + COALESCE(overhead_cost,0) as total_cost')
                         ->value('total_cost');
                     $standardCost = (float) ($itemCost ?? 0);
+
+                    // Persist the recalculated cost onto the line item — otherwise
+                    // it stays 0 forever and any report reading standard_cost
+                    // straight off sales_invoice_items shows COGS = 0 for a sale
+                    // that (via the GL entry below) actually has a real cost.
+                    if ($standardCost > 0) {
+                        $invoiceItem->update(['standard_cost' => $standardCost]);
+                    }
                 }
 
                 $item = DB::table('items')->where('stock_id', $invoiceItem->stock_id)
