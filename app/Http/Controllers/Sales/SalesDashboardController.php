@@ -37,7 +37,7 @@ class SalesDashboardController extends Controller
             // ── Q1: Invoice aggregates — all 4 periods in one query ──────────────
             // (was 4 separate queries)
             $invAgg = DB::table('sales_invoices')
-                ->whereNotIn('status', ['cancelled'])
+                ->whereNotIn('status', ['cancelled', 'draft'])
                 ->where('invoice_date', '>=', $wideFrom)
                 ->where('invoice_date', '<=', $to)
                 ->when($locationId,   fn($q) => $q->where('location_id',   $locationId))
