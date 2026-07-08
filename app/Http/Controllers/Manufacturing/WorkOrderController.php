@@ -263,24 +263,34 @@ class WorkOrderController extends Controller
     {
         $wo   = WorkOrder::findOrFail($id);
         $data = $request->validate([
-            'operator_name' => 'required|string|max:100',
-            'role'          => 'nullable|string|max:100',
-            'rate_per_hour' => 'required|numeric|min:0',
-            'hours_worked'  => 'required|numeric|min:0.01',
-            'work_date'     => ['required', 'date', new \App\Rules\WithinFiscalYear],
+            'operator_name'  => 'required|string|max:100',
+            'role'           => 'nullable|string|max:100',
+            'rate_per_hour'  => 'required|numeric|min:0',
+            'hours_worked'   => 'required|numeric|min:0.01',
+            'work_date'      => ['required', 'date', new \App\Rules\WithinFiscalYear],
+            'credit_account' => 'required|string|max:20',
         ]);
 
         $totalCost = round($data['rate_per_hour'] * $data['hours_worked'], 4);
-        $labour = WorkOrderLabour::create(array_merge($data, [
-            'work_order_id' => $wo->id,
-            'total_cost'    => $totalCost,
-            'created_by'    => auth()->user()?->user_id ?? '',
-        ]));
+        $user = auth()->user()?->user_id ?? '';
 
-        // Refresh labour total on WO
-        $wo->update(['total_labour_cost' => $wo->labour()->sum('total_cost')]);
+        $labour = DB::transaction(function () use ($data, $wo, $totalCost, $user) {
+            $labour = WorkOrderLabour::create(array_merge($data, [
+                'work_order_id' => $wo->id,
+                'total_cost'    => $totalCost,
+                'created_by'    => $user,
+            ]));
 
-        return ApiResponse::created($labour, 'Labour entry added');
+            $wo->update(['total_labour_cost' => $wo->labour()->sum('total_cost')]);
+
+            if ($totalCost > 0) {
+                $this->service->postCostEntry($wo, $totalCost, $data['credit_account'], "Labour — {$data['operator_name']} ({$wo->wo_no})", $user);
+            }
+
+            return $labour;
+        });
+
+        return ApiResponse::created($labour, 'Labour entry added and posted to GL');
     }
 
     // ── Overhead entry ────────────────────────────────────────────────────────
@@ -288,21 +298,31 @@ class WorkOrderController extends Controller
     {
         $wo   = WorkOrder::findOrFail($id);
         $data = $request->validate([
-            'description'   => 'required|string|max:200',
-            'overhead_type' => 'required|in:variable,fixed',
-            'amount'        => 'required|numeric|min:0',
-            'date_posted'   => ['required', 'date', new \App\Rules\WithinFiscalYear],
+            'description'    => 'required|string|max:200',
+            'overhead_type'  => 'required|in:variable,fixed',
+            'amount'         => 'required|numeric|min:0',
+            'date_posted'    => ['required', 'date', new \App\Rules\WithinFiscalYear],
+            'credit_account' => 'required|string|max:20',
         ]);
 
-        $overhead = WorkOrderOverhead::create(array_merge($data, [
-            'work_order_id' => $wo->id,
-            'created_by'    => auth()->user()?->user_id ?? '',
-        ]));
+        $user = auth()->user()?->user_id ?? '';
 
-        // Refresh overhead total on WO
-        $wo->update(['total_overhead_cost' => $wo->overhead()->sum('amount')]);
+        $overhead = DB::transaction(function () use ($data, $wo, $user) {
+            $overhead = WorkOrderOverhead::create(array_merge($data, [
+                'work_order_id' => $wo->id,
+                'created_by'    => $user,
+            ]));
 
-        return ApiResponse::created($overhead, 'Overhead entry added');
+            $wo->update(['total_overhead_cost' => $wo->overhead()->sum('amount')]);
+
+            if ($data['amount'] > 0) {
+                $this->service->postCostEntry($wo, (float) $data['amount'], $data['credit_account'], "Overhead — {$data['description']} ({$wo->wo_no})", $user);
+            }
+
+            return $overhead;
+        });
+
+        return ApiResponse::created($overhead, 'Overhead entry added and posted to GL');
     }
 
     // ── Update a single BOM line's qty_issued ────────────────────────────────

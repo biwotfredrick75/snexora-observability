@@ -190,9 +190,15 @@ class WorkOrderService
 
         // ── Step 3: post movements ────────────────────────────────────────────
         $netCostDelta = 0;
+        // Net cost delta grouped by each component's OWN inventory account —
+        // a blanket account for every line (regardless of item master config)
+        // would misstate inventory value for items with a non-default account.
+        $invCostByAccount = [];
 
-        DB::transaction(function () use ($toIssueLines, $toReverseLines, $bottleneck, $wo, $user, &$netCostDelta) {
+        DB::transaction(function () use ($toIssueLines, $toReverseLines, $bottleneck, $wo, $user, &$netCostDelta, &$invCostByAccount) {
             $glBase = ['trans_no' => $wo->id, 'tran_date' => now()->toDateString(), 'reference' => $wo->wo_no, 'created_by' => $user];
+            $glSettings = DB::table('gl_settings')->first();
+            $defaultInvAccount = $glSettings?->items_inventory_account ?: '101010';
 
             // Issue lines
             foreach ($toIssueLines as $p) {
@@ -205,6 +211,8 @@ class WorkOrderService
                 $unitCost = $this->resolveUnitCost($line->component_code, (float) ($item?->purchase_cost ?? $line->unit_cost));
                 $cost     = round($qty * $unitCost, 4);
                 $netCostDelta += $cost;
+                $invAccount = $item?->inventory_account ?: $defaultInvAccount;
+                $invCostByAccount[$invAccount] = ($invCostByAccount[$invAccount] ?? 0) + $cost;
 
                 DB::table('stock_movements')->insert([
                     'trans_no'      => $wo->id,
@@ -235,6 +243,9 @@ class WorkOrderService
                 $unitCost = (float) $line->unit_cost;
                 $cost     = round($qty * $unitCost, 4);
                 $netCostDelta -= $cost;
+                $item       = DB::table('items')->where('stock_id', $line->component_code)->first();
+                $invAccount = $item?->inventory_account ?: $defaultInvAccount;
+                $invCostByAccount[$invAccount] = ($invCostByAccount[$invAccount] ?? 0) - $cost;
 
                 DB::table('stock_movements')->insert([
                     'trans_no'      => $wo->id,
@@ -257,13 +268,14 @@ class WorkOrderService
                 ]);
             }
 
-            // GL: DR WIP / CR Inventory (net of issues minus returns)
+            // GL: DR WIP (one line) / CR Inventory (one line per distinct account)
             if (abs($netCostDelta) > 0.0001) {
-                $glSettings = DB::table('gl_settings')->first();
-                $wipAccount = $glSettings?->wip_account ?? '103000';
-                $invAccount = $glSettings?->items_inventory_account ?? '101010';
-                DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $wipAccount, 'narration' => 'WIP — ' . $wo->wo_no,         'amount' =>  $netCostDelta]));
-                DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $invAccount,  'narration' => 'Goods Issue — ' . $wo->wo_no, 'amount' => -$netCostDelta]));
+                $wipAccount = $glSettings?->items_wip_account ?: '103000';
+                DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $wipAccount, 'narration' => 'WIP — ' . $wo->wo_no, 'amount' => $netCostDelta]));
+                foreach ($invCostByAccount as $account => $amount) {
+                    if (abs($amount) < 0.0001) continue;
+                    DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $account, 'narration' => 'Goods Issue — ' . $wo->wo_no, 'amount' => -$amount]));
+                }
             }
 
             $wo->update([
@@ -331,6 +343,19 @@ class WorkOrderService
             throw new \RuntimeException("Finished product '{$wo->product_code}' not found in items master.");
         }
 
+        // Only material + labour + overhead were ever actually debited into WIP
+        // (via issueAll()/addLabour()/addOverhead()) — total_cost also bakes in
+        // a 3% scrap provision with no originating transaction. Crediting WIP
+        // for total_cost would credit more than was ever debited, leaving WIP
+        // permanently short by the scrap amount. Settle for the real posted
+        // amount; total_cost/unit_cost stay on the WO record as-is for the
+        // cost sheet's pricing guidance, unaffected.
+        $postedCost = round(
+            (float) $wo->total_material_cost + (float) $wo->total_labour_cost + (float) $wo->total_overhead_cost,
+            4
+        );
+        $postedUnitCost = $wo->actual_qty_produced > 0 ? round($postedCost / $wo->actual_qty_produced, 4) : 0;
+
         // Stock receipt for finished goods (type 41)
         DB::table('stock_movements')->insert([
             'trans_no'      => $wo->id,
@@ -339,8 +364,8 @@ class WorkOrderService
             'loc_code'      => $wo->output_location_code ?: $wo->location_code,
             'tran_date'     => now()->toDateString(),
             'qty'           => $wo->actual_qty_produced,
-            'price'         => $wo->unit_cost,
-            'standard_cost' => $wo->unit_cost,
+            'price'         => $postedUnitCost,
+            'standard_cost' => $postedUnitCost,
             'reference'     => $wo->wo_no,
             'comments'      => 'WO Settlement — ' . $wo->wo_no,
             'unique_key'    => \Illuminate\Support\Str::uuid()->toString(),
@@ -348,15 +373,32 @@ class WorkOrderService
 
         // GL: DR Finished Goods / CR WIP
         $glSettings  = DB::table('gl_settings')->first();
-        $fgAccount   = $item->inventory_account ?: ($glSettings?->items_inventory_account ?? '101010');
-        $wipAccount  = $glSettings?->wip_account ?? '103000';
-        $totalCost   = $wo->total_cost;
+        $fgAccount   = $item->inventory_account ?: ($glSettings?->items_inventory_account ?: '101010');
+        $wipAccount  = $glSettings?->items_wip_account ?: '103000';
 
         $glBase = ['trans_no' => $wo->id, 'tran_date' => now()->toDateString(), 'reference' => $wo->wo_no, 'created_by' => $user];
-        DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_RECEIPT, 'account_code' => $fgAccount,  'narration' => 'FG Receipt — ' . $wo->wo_no, 'amount' => $totalCost]));
-        DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_RECEIPT, 'account_code' => $wipAccount,  'narration' => 'WIP Clearance — ' . $wo->wo_no, 'amount' => -$totalCost]));
+        DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_RECEIPT, 'account_code' => $fgAccount,  'narration' => 'FG Receipt — ' . $wo->wo_no, 'amount' => $postedCost]));
+        DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_RECEIPT, 'account_code' => $wipAccount,  'narration' => 'WIP Clearance — ' . $wo->wo_no, 'amount' => -$postedCost]));
 
         $wo->update(['status' => self::STATUS_CLOSED]);
+    }
+
+    /**
+     * Posts a labour or overhead cost entry into WIP: DR WIP / CR the account
+     * the caller nominates it was paid from/accrued to (e.g. a wages clearing
+     * account, an accrued-overhead account, or cash). Without this, labour and
+     * overhead were only ever cached as totals on the work order and never
+     * actually entered the ledger, yet settle() used to credit WIP for them
+     * anyway — a debit that never happened being cleared out from under it.
+     */
+    public function postCostEntry(WorkOrder $wo, float $amount, string $creditAccount, string $narration, string $user): void
+    {
+        $glSettings = DB::table('gl_settings')->first();
+        $wipAccount = $glSettings?->items_wip_account ?: '103000';
+        $glBase = ['trans_no' => $wo->id, 'tran_date' => now()->toDateString(), 'reference' => $wo->wo_no, 'created_by' => $user];
+
+        DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $wipAccount,     'narration' => $narration, 'amount' => $amount]));
+        DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $creditAccount, 'narration' => $narration, 'amount' => -$amount]));
     }
 
     /**
