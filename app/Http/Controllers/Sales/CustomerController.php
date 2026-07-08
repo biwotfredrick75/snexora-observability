@@ -30,7 +30,9 @@ class CustomerController extends Controller
         $q        = trim($request->get('q', ''));
         $inactive = $request->boolean('inactive', false);
 
-        $query = Customer::with(['branches', 'priceList', 'paymentTerm', 'creditStatus']);
+        $query = Customer::with(['branches', 'priceList', 'paymentTerm', 'creditStatus'])
+            ->withSum(['invoices as invoiced_total' => fn ($q) => $q->where('status', 'placed')], 'amount_total')
+            ->withSum('allocations as allocated_total', 'amount');
 
         if (! $inactive) {
             $query->where('inactive', false);
@@ -44,6 +46,12 @@ class CustomerController extends Controller
         }
 
         $customers = $query->orderBy('name')->get();
+
+        // current_credit is a stored column that's never updated by invoicing/payments —
+        // compute the real outstanding exposure instead: placed invoices minus allocations.
+        $customers->each(function ($c) {
+            $c->current_credit = round(max(0, (float) ($c->invoiced_total ?? 0) - (float) ($c->allocated_total ?? 0)), 2);
+        });
 
         return ApiResponse::success($customers, 'Customers retrieved');
     }
@@ -63,8 +71,12 @@ class CustomerController extends Controller
             ->where('status', 'placed')
             ->count();
 
+        $invoicedTotal  = (float) DB::table('sales_invoices')->where('debtor_no', $id)->where('status', 'placed')->sum('amount_total');
+        $allocatedTotal = (float) DB::table('debtor_allocations')->where('debtor_no', $id)->sum('amount');
+
         $data = $customer->toArray();
         $data['outstanding_invoices_count'] = $outstandingInvoicesCount;
+        $data['current_credit'] = round(max(0, $invoicedTotal - $allocatedTotal), 2);
 
         return ApiResponse::success($data, 'Customer retrieved');
     }

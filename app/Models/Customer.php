@@ -54,6 +54,16 @@ class Customer extends Model
         return $this->belongsTo(CreditStatus::class, 'credit_status_id');
     }
 
+    public function invoices(): HasMany
+    {
+        return $this->hasMany(SalesInvoice::class, 'debtor_no', 'debtor_no');
+    }
+
+    public function allocations(): HasMany
+    {
+        return $this->hasMany(DebtorAllocation::class, 'debtor_no', 'debtor_no');
+    }
+
     public static function nextCustomerNumber(): int
     {
         return (int) (static::max('customer_number') ?? 0) + 1;
