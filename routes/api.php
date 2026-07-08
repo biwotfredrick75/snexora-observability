@@ -402,10 +402,24 @@ Route::middleware('auth:api')->group(function () {
         Route::delete('gl-groups/{id}',    [GlAccountGroupController::class, 'destroy']);
 
         // ── Journal Entries ───────────────────────────────────────────────────
-        Route::get('journal-entries',              [\App\Http\Controllers\Banking\JournalEntryController::class, 'index']);
-        Route::post('journal-entries',             [\App\Http\Controllers\Banking\JournalEntryController::class, 'store']);
-        Route::get('journal-entries/{id}',         [\App\Http\Controllers\Banking\JournalEntryController::class, 'show']);
-        Route::post('journal-entries/{id}/void',   [\App\Http\Controllers\Banking\JournalEntryController::class, 'void']);
+        Route::get('journal-entries',                     [\App\Http\Controllers\Banking\JournalEntryController::class, 'index']);
+        Route::post('journal-entries',                    [\App\Http\Controllers\Banking\JournalEntryController::class, 'store']);
+        Route::get('journal-entries/pending-approval',    [\App\Http\Controllers\Banking\JournalEntryController::class, 'pendingApproval']);
+        Route::get('journal-entries/pending-post',        [\App\Http\Controllers\Banking\JournalEntryController::class, 'pendingPost']);
+        Route::post('journal-entries/post-bulk',          [\App\Http\Controllers\Banking\JournalEntryController::class, 'postBulk']);
+        Route::get('journal-entries/{id}',                [\App\Http\Controllers\Banking\JournalEntryController::class, 'show']);
+        Route::post('journal-entries/{id}/void',          [\App\Http\Controllers\Banking\JournalEntryController::class, 'void']);
+        Route::post('journal-entries/{id}/approve',       [\App\Http\Controllers\Banking\JournalEntryController::class, 'approve']);
+        Route::post('journal-entries/{id}/reject',        [\App\Http\Controllers\Banking\JournalEntryController::class, 'reject']);
+        Route::post('journal-entries/{id}/post',          [\App\Http\Controllers\Banking\JournalEntryController::class, 'post']);
+
+        // ── Recurring Journals ────────────────────────────────────────────────
+        Route::get('recurring-journals',                  [\App\Http\Controllers\Banking\RecurringJournalController::class, 'index']);
+        Route::post('recurring-journals',                 [\App\Http\Controllers\Banking\RecurringJournalController::class, 'store']);
+        Route::post('recurring-journals/generate-due',    [\App\Http\Controllers\Banking\RecurringJournalController::class, 'generateDue']);
+        Route::get('recurring-journals/{id}',              [\App\Http\Controllers\Banking\RecurringJournalController::class, 'show']);
+        Route::put('recurring-journals/{id}',              [\App\Http\Controllers\Banking\RecurringJournalController::class, 'update']);
+        Route::delete('recurring-journals/{id}',           [\App\Http\Controllers\Banking\RecurringJournalController::class, 'destroy']);
 
         // ── GL Inquiry ────────────────────────────────────────────────────────
         Route::get('gl-inquiry',                   [\App\Http\Controllers\Banking\GlInquiryController::class, 'index']);
