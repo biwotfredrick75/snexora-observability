@@ -58,7 +58,7 @@ class JournalInquiryController extends Controller
         if ($request->filled('from'))      $query->where('gt.tran_date', '>=', $request->from);
         if ($request->filled('to'))        $query->where('gt.tran_date', '<=', $request->to);
         if ($request->filled('type'))      $query->where('gt.type', $request->type);
-        if ($request->filled('reference')) $query->havingRaw("{$bx} LIKE ?", ['%' . $request->reference . '%']);
+        if ($request->filled('reference')) $query->havingRaw('batch_ref LIKE ?', ['%' . $request->reference . '%']);
 
         $journals = $query
             ->orderByRaw('MIN(gt.tran_date) DESC')
