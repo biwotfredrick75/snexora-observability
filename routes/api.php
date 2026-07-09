@@ -1199,6 +1199,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('milk-purchases',                      [MilkPurchaseController::class, 'index']);
         Route::post('milk-purchases',                     [MilkPurchaseController::class, 'store']);
         Route::get('milk-purchases/{id}',                 [MilkPurchaseController::class, 'show']);
+        Route::get('milk-purchases/{id}/gl-entries',      [MilkPurchaseController::class, 'glEntries']);
         Route::post('milk-purchases/{id}/approve',        [MilkPurchaseController::class, 'approve']);
         Route::post('milk-purchases/{id}/reject',         [MilkPurchaseController::class, 'reject']);
 

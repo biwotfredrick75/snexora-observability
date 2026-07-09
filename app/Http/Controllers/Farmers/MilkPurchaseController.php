@@ -10,6 +10,7 @@ use App\Models\MilkPurchase;
 use App\Models\MilkRoute;
 use App\Models\MilkCollectionShift;
 use App\Services\Farmers\MilkPurchaseApprovalService;
+use App\Models\GldTransaction;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -297,6 +298,57 @@ class MilkPurchaseController extends Controller
             $purchase->fresh(['items.farmer', 'route', 'shift', 'graderLocation']),
             'Purchase approved — accounting records posted'
         );
+    }
+
+    // ── GL entries posted for this purchase (populated on approval) ──────────
+    public function glEntries(int $id): JsonResponse
+    {
+        $purchase = MilkPurchase::with(['route', 'shift', 'graderLocation'])->find($id);
+        if (! $purchase) return ApiResponse::notFound('Purchase not found');
+
+        $company = DB::table('company_preferences')->first();
+
+        $entries = GldTransaction::whereIn('type', [
+                MilkPurchaseApprovalService::TYPE_GRN_RECEIVE,
+                MilkPurchaseApprovalService::TYPE_SUPP_INVOICE,
+            ])
+            ->where('trans_no', $purchase->id)
+            ->orderBy('id')
+            ->get();
+
+        $enriched = $entries->map(function ($e) {
+            $accountName = DB::table('gl_accounts')
+                ->where('code', $e->account_code)
+                ->value('name') ?? $e->account_code;
+            return [
+                'tran_date'    => $e->tran_date,
+                'account_code' => $e->account_code,
+                'account_name' => $accountName,
+                'narration'    => $e->narration,
+                'amount'       => (float) $e->amount,
+                'dimension1'   => null,
+                'dimension2'   => null,
+            ];
+        });
+
+        $totalDebit  = $enriched->where('amount', '>', 0)->sum('amount');
+        $totalCredit = abs($enriched->where('amount', '<', 0)->sum('amount'));
+
+        return ApiResponse::success([
+            'company'  => $company,
+            'delivery' => [   // keep key as 'delivery' for GLJournalModal compatibility
+                'id'            => $purchase->id,
+                'dn_no'         => $purchase->reference_no,
+                'delivery_date' => $purchase->invoice_date instanceof \Carbon\Carbon
+                    ? $purchase->invoice_date->toDateString()
+                    : $purchase->invoice_date,
+                'customer_name' => $purchase->graderLocation?->name,
+                'debtor_no'     => $purchase->route?->route_name,
+            ],
+            'entries'      => $enriched,
+            'total_debit'  => round($totalDebit, 2),
+            'total_credit' => round($totalCredit, 2),
+        ], $purchase->status === 'approved' ? 'GL entries retrieved' : 'Purchase not yet approved — no GL entries posted');
     }
 
     // ── Reject a single purchase ──────────────────────────────────────────────

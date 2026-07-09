@@ -14,8 +14,6 @@ use Illuminate\Support\Facades\DB;
 
 class MilkLocationTransferController extends Controller
 {
-    private const RAW_MILK_STOCK_ID = '0001';
-
     // ── Form dropdowns ───────────────────────────────────────────────────────
     public function formData(): JsonResponse
     {
@@ -43,12 +41,12 @@ class MilkLocationTransferController extends Controller
         $shiftLabel = $this->shiftLabel($request->shift_id);
 
         $query = DB::table('stock_movements')
-            ->where('stock_id', self::RAW_MILK_STOCK_ID)
+            ->where('stock_id', $this->rawMilkStockId())
             ->where('loc_code', $location->code)
             ->where('tran_date', $request->transfer_date);
 
         if ($shiftLabel) {
-            $query->where('shift', $shiftLabel);
+            $query->whereRaw('UPPER(shift) = ?', [$shiftLabel]);
         }
 
         $availableQty = (float) $query->sum('qty');
@@ -115,7 +113,7 @@ class MilkLocationTransferController extends Controller
 
             $base = [
                 'trans_no'  => $transNo,
-                'stock_id'  => self::RAW_MILK_STOCK_ID,
+                'stock_id'  => $this->rawMilkStockId(),
                 'type'      => StockMovement::TYPE_TRANSFER,
                 'tran_date' => $data['transfer_date'],
                 'date_moved'=> $today,
@@ -152,11 +150,21 @@ class MilkLocationTransferController extends Controller
         }
     }
 
-    // ── Helper ───────────────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────────────────────────────────────────
     private function shiftLabel(?int $shiftId): string
     {
         if (!$shiftId) return '';
         $shift = MilkCollectionShift::find($shiftId);
         return $shift ? strtoupper($shift->description) : '';
+    }
+
+    private function rawMilkStockId(): string
+    {
+        return DB::table('items')
+            ->where(fn ($q) => $q
+                ->where('long_description', 'like', '%RAW MILK%')
+                ->orWhere('description', 'like', '%RAW MILK%')
+            )
+            ->value('stock_id') ?? '0001';
     }
 }
