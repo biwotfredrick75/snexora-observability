@@ -513,11 +513,26 @@ class PosController extends Controller
                 if ($salesAccount) {
                     $gross        = round($line['unit_price'] * $qty, 4);
                     $discAmt      = round($gross * $line['discount_percent'] / 100, 4);
-                    $netAfterDisc = $gross - $discAmt;
-                    $taxAmt       = $line['tax_amount'];
-                    $netRevenue   = $netAfterDisc - $taxAmt;
+                    $netAfterDisc = $gross - $discAmt;   // tax-EXCLUSIVE revenue for this line
+                    $taxAmt       = $line['tax_amount']; // tax charged ON TOP of $netAfterDisc
 
-                    $totalRevenueDebit += $gross;
+                    // Tax only gets its own Tax Payable credit when the item's tax
+                    // type resolves to a configured GL account; otherwise it stays
+                    // folded into Sales Revenue rather than vanishing from the
+                    // ledger. Cash collected always equals $line['line_total']
+                    // (= $netAfterDisc + $taxAmt, what the customer actually paid)
+                    // regardless of which way the tax portion is split, so the
+                    // legs can never fall out of balance.
+                    $taxAccount = null;
+                    if ($taxAmt != 0 && $item?->tax_type_id) {
+                        $taxAccount = DB::table('tax_types')
+                            ->where('id', $item->tax_type_id)
+                            ->value('sales_gl_account');
+                    }
+
+                    $revenueAmt = $taxAccount ? $netAfterDisc : ($netAfterDisc + $taxAmt);
+
+                    $totalRevenueDebit += $line['line_total'];
 
                     GldTransaction::create([
                         'trans_no'     => $sale->id,
@@ -526,31 +541,25 @@ class PosController extends Controller
                         'account_code' => $salesAccount,
                         'reference'    => $soNo,
                         'narration'    => "Sales — {$line['description']} ({$soNo})",
-                        'amount'       => -$netRevenue,   // negative = credit
+                        'amount'       => -$revenueAmt,   // negative = credit
                         'created_by'   => $createdBy,
                         'dimension_id' => $dimId,
                         'dimension2_id'=> $dim2Id,
                     ]);
 
-                    if ($taxAmt != 0 && $item?->tax_type_id) {
-                        $taxAccount = DB::table('tax_types')
-                            ->where('id', $item->tax_type_id)
-                            ->value('sales_gl_account');
-
-                        if ($taxAccount) {
-                            GldTransaction::create([
-                                'trans_no'     => $sale->id,
-                                'type'         => StockMovement::TYPE_DELIVERY,
-                                'tran_date'    => $today,
-                                'account_code' => $taxAccount,
-                                'reference'    => $soNo,
-                                'narration'    => "Tax — {$line['description']} ({$soNo})",
-                                'amount'       => -$taxAmt,   // negative = credit
-                                'created_by'   => $createdBy,
-                                'dimension_id' => $dimId,
-                                'dimension2_id'=> $dim2Id,
-                            ]);
-                        }
+                    if ($taxAccount) {
+                        GldTransaction::create([
+                            'trans_no'     => $sale->id,
+                            'type'         => StockMovement::TYPE_DELIVERY,
+                            'tran_date'    => $today,
+                            'account_code' => $taxAccount,
+                            'reference'    => $soNo,
+                            'narration'    => "Tax — {$line['description']} ({$soNo})",
+                            'amount'       => -$taxAmt,   // negative = credit
+                            'created_by'   => $createdBy,
+                            'dimension_id' => $dimId,
+                            'dimension2_id'=> $dim2Id,
+                        ]);
                     }
                 }
             }
