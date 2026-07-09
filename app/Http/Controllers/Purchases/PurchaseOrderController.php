@@ -460,6 +460,7 @@ class PurchaseOrderController extends Controller
         $tranDate  = $po->delivery_date ?? $po->order_date ?? now()->toDateString();
         $glSetting = GlSetting::first();
         $apAccount = $glSetting?->supplier_payable_account ?: '201010';
+        $grnClearing = $glSetting?->grn_clearing_account ?: 'GRN-CLEARING';
         $glType    = 25; // direct supplier invoice
 
         foreach ($po->items as $idx => $item) {
@@ -476,35 +477,45 @@ class PurchaseOrderController extends Controller
 
             $inventoryAccount = $itemRecord?->inventory_account ?: ($glSetting?->items_inventory_account ?: 'INVENTORY');
 
-            // Stock movement: goods in
-            StockMovement::create([
-                'trans_no'      => $po->id,
-                'stock_id'      => $item->stock_id,
-                'type'          => $glType,
-                'loc_code'      => $locCode,
-                'tran_date'     => $tranDate,
-                'date_moved'    => $tranDate,
-                'qty'           => $qty,
-                'price'         => $cost,
-                'standard_cost' => $cost,
-                'reference'     => $po->po_no,
-                'comments'      => $po->internal_memo ?: null,
-                'user_name'     => $approver,
-                'approved'      => 1,
-                'batch_no'      => $batchNo,
-                'batch_new'     => 1,
-            ]);
+            // Goods already received via a GRN: stock was moved in and inventory
+            // was debited at receipt time (postGrnReceipt). This invoice only
+            // settles the liability — it must not move stock or debit inventory again.
+            $alreadyReceivedViaGrn = $item->grn_item_id !== null || $po->source_grn_id !== null;
+
+            if (!$alreadyReceivedViaGrn) {
+                // Stock movement: goods in — only for a true direct invoice (no prior GRN)
+                StockMovement::create([
+                    'trans_no'      => $po->id,
+                    'stock_id'      => $item->stock_id,
+                    'type'          => $glType,
+                    'loc_code'      => $locCode,
+                    'tran_date'     => $tranDate,
+                    'date_moved'    => $tranDate,
+                    'qty'           => $qty,
+                    'price'         => $cost,
+                    'standard_cost' => $cost,
+                    'reference'     => $po->po_no,
+                    'comments'      => $po->internal_memo ?: null,
+                    'user_name'     => $approver,
+                    'approved'      => 1,
+                    'batch_no'      => $batchNo,
+                    'batch_new'     => 1,
+                ]);
+            }
 
             if ($lineAmount == 0) continue;
 
-            // GL: DR Inventory account
+            // GL: DR Inventory (direct invoice) or DR GRN Clearing (settling a
+            // liability already booked at GRN receipt time) — never both.
             GldTransaction::create([
                 'trans_no'      => $po->id,
                 'type'          => $glType,
                 'tran_date'     => $tranDate,
-                'account_code'  => $inventoryAccount,
+                'account_code'  => $alreadyReceivedViaGrn ? $grnClearing : $inventoryAccount,
                 'reference'     => $po->po_no,
-                'narration'     => "Direct Invoice — {$item->description} ({$po->po_no})",
+                'narration'     => $alreadyReceivedViaGrn
+                    ? "GRN clearing — {$item->description} ({$po->po_no})"
+                    : "Direct Invoice — {$item->description} ({$po->po_no})",
                 'amount'        => $lineAmount,
                 'created_by'    => $approver,
                 'dimension_id'  => $itemRecord?->dimension_id  ?? null,
