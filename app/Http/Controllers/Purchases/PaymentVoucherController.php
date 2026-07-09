@@ -58,66 +58,75 @@ class PaymentVoucherController extends Controller
 
     /**
      * GET /purchases/payment-vouchers/open-transactions?supplier_id=
-     * Returns open transactions for a supplier (invoices, GRNs, credit notes NOT fully allocated)
+     * Returns open Supplier Invoices for a supplier that still have a
+     * balance left to allocate against a cash payment.
      */
     public function openTransactions(Request $request): JsonResponse
     {
         $request->validate(['supplier_id' => 'required|integer']);
         $supplierId = $request->supplier_id;
 
-        $rows = collect();
-
-        // Credit notes (money supplier owes us — negative allocation)
-        $creditNotes = DB::table('supplier_credit_notes as scn')
-            ->where('scn.supplier_id', $supplierId)
-            ->where('scn.status', 'posted')
-            ->leftJoin('payment_voucher_allocations as pva', function ($j) {
-                $j->on('pva.transaction_id', '=', 'scn.id')
-                  ->where('pva.transaction_type', 'Credit Note');
-            })
-            ->select(
-                DB::raw("'Credit Note' as transaction_type"),
-                'scn.id',
-                'scn.scn_no as supplier_ref',
-                'scn.date',
-                DB::raw('NULL as due_date'),
-                'scn.total as amount',
-                DB::raw('COALESCE(SUM(pva.this_allocation),0) as other_allocations'),
-                DB::raw('scn.total - COALESCE(SUM(pva.this_allocation),0) as left_to_allocate')
-            )
-            ->groupBy('scn.id', 'scn.scn_no', 'scn.date', 'scn.total')
-            ->havingRaw('scn.total - COALESCE(SUM(pva.this_allocation),0) > 0')
-            ->get();
-        $rows = $rows->concat($creditNotes);
-
         // Supplier invoices only — a GRN isn't a payable on its own, it's just
         // the goods receipt; the supplier's actual bill is the invoice raised
         // against it (via "Create Invoice from this GRN"), so only that should
         // ever be payable/allocatable here.
+        //
+        // Credit notes are deliberately excluded from this cash-payment screen:
+        // SupplierCreditNoteController already posts their full GL effect
+        // (DR Accounts Payable / CR Inventory) at creation time, so allocating
+        // one here would DR AP a second time and force a bogus cash outflow
+        // equal to the credit note. To apply a credit note against an invoice,
+        // use "Allocate Payment / Journal" → Credit Notes tab on the Normal
+        // Supplier Inquiry screen — that path is GL-neutral (subledger match
+        // only, via supplier_credit_note_allocations).
         $invoices = DB::table('purchase_orders as po')
             ->where('po.supplier_id', $supplierId)
             ->where('po.type', 'invoice')
             ->whereIn('po.status', ['received', 'ceo_approved'])
-            ->leftJoin('payment_voucher_allocations as pva', function ($j) {
-                $j->on('pva.transaction_id', '=', 'po.id')
-                  ->where('pva.transaction_type', 'Supplier Invoice');
-            })
-            ->select(
-                DB::raw("'Supplier Invoice' as transaction_type"),
-                'po.id',
-                'po.po_no as supplier_ref',
-                DB::raw('po.order_date as date'),
-                DB::raw('NULL as due_date'),
-                'po.amount_total as amount',
-                DB::raw('COALESCE(SUM(pva.this_allocation),0) as other_allocations'),
-                DB::raw('po.amount_total - COALESCE(SUM(pva.this_allocation),0) as left_to_allocate')
-            )
-            ->groupBy('po.id', 'po.type', 'po.po_no', 'po.order_date', 'po.amount_total')
-            ->havingRaw('po.amount_total - COALESCE(SUM(pva.this_allocation),0) > 0')
+            ->select('po.id', 'po.po_no', 'po.order_date', 'po.amount_total')
             ->get();
-        $rows = $rows->concat($invoices);
 
-        $rows = $rows->sortBy('date')->values();
+        if ($invoices->isEmpty()) {
+            return ApiResponse::success([], 'Open transactions loaded');
+        }
+
+        $ids = $invoices->pluck('id');
+
+        // Cash already allocated against each invoice via this same mechanism.
+        $cashAllocated = DB::table('payment_voucher_allocations')
+            ->where('transaction_type', 'Supplier Invoice')
+            ->whereIn('transaction_id', $ids)
+            ->select('transaction_id', DB::raw('SUM(this_allocation) as total'))
+            ->groupBy('transaction_id')
+            ->pluck('total', 'transaction_id');
+
+        // Amount already settled against each invoice via a direct credit-note
+        // contra — GL-neutral, but it still consumes the invoice's balance, so
+        // a cash payment shouldn't be allocatable on top of it too.
+        $creditAllocated = DB::table('supplier_credit_note_allocations')
+            ->where('transaction_type', 'Supplier Invoice')
+            ->whereIn('transaction_id', $ids)
+            ->select('transaction_id', DB::raw('SUM(amount) as total'))
+            ->groupBy('transaction_id')
+            ->pluck('total', 'transaction_id');
+
+        $rows = $invoices->map(function ($po) use ($cashAllocated, $creditAllocated) {
+            $otherAllocations = (float) ($cashAllocated[$po->id] ?? 0) + (float) ($creditAllocated[$po->id] ?? 0);
+
+            return [
+                'transaction_type'  => 'Supplier Invoice',
+                'id'                => $po->id,
+                'supplier_ref'      => $po->po_no,
+                'date'              => $po->order_date,
+                'due_date'          => null,
+                'amount'            => (float) $po->amount_total,
+                'other_allocations' => $otherAllocations,
+                'left_to_allocate'  => round((float) $po->amount_total - $otherAllocations, 2),
+            ];
+        })
+            ->filter(fn ($r) => $r['left_to_allocate'] > 0)
+            ->sortBy('date')
+            ->values();
 
         return ApiResponse::success($rows, 'Open transactions loaded');
     }
@@ -202,7 +211,9 @@ class PaymentVoucherController extends Controller
             'cheque_no'              => 'nullable|string|max:60',
             'memo'                   => 'nullable|string',
             'allocations'            => 'nullable|array',
-            'allocations.*.transaction_type' => 'required|string',
+            // Credit Note deliberately excluded — see openTransactions() for why
+            // allocating one against a cash voucher would double-reduce AP.
+            'allocations.*.transaction_type' => 'required|string|in:Supplier Invoice',
             'allocations.*.transaction_id'   => 'required|integer',
             'allocations.*.this_allocation'  => 'required|numeric|min:0',
         ]);
@@ -385,9 +396,9 @@ class PaymentVoucherController extends Controller
      * Posts the voucher to GL: DR Payables / CR Bank
      *
      * Allocations are made here (not at entry time) — the approved voucher's
-     * amount is allocated against the supplier's open invoices/GRNs/credit
-     * notes as part of posting. If the voucher already has allocations
-     * (e.g. legacy vouchers entered the old way), those are used as-is.
+     * amount is allocated against the supplier's open invoices as part of
+     * posting. If the voucher already has allocations (e.g. legacy vouchers
+     * entered the old way), those are used as-is.
      */
     public function post(Request $request, int $id): JsonResponse
     {
@@ -399,7 +410,9 @@ class PaymentVoucherController extends Controller
 
         $request->validate([
             'allocations'                     => 'nullable|array',
-            'allocations.*.transaction_type'  => 'required_with:allocations|string',
+            // Credit Note deliberately excluded — see openTransactions() for why
+            // allocating one against a cash voucher would double-reduce AP.
+            'allocations.*.transaction_type'  => 'required_with:allocations|string|in:Supplier Invoice',
             'allocations.*.transaction_id'    => 'required_with:allocations|integer',
             'allocations.*.this_allocation'   => 'required_with:allocations|numeric|min:0',
         ]);
@@ -575,6 +588,15 @@ class PaymentVoucherController extends Controller
             $total = (float) DB::table('supplier_credit_notes')->where('id', $transactionId)->value('total');
         } else {
             $total = (float) DB::table('purchase_orders')->where('id', $transactionId)->value('amount_total');
+
+            // Net out anything already settled against this invoice via a
+            // direct credit-note contra (supplier_credit_note_allocations) —
+            // GL-neutral on its own, but it still consumes the invoice's
+            // balance, so cash can't be allocated on top of it too.
+            $alreadyAllocated += (float) DB::table('supplier_credit_note_allocations')
+                ->where('transaction_type', $transactionType)
+                ->where('transaction_id', $transactionId)
+                ->sum('amount');
         }
 
         return max(0, $total - $alreadyAllocated);
