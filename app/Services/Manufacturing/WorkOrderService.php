@@ -124,16 +124,35 @@ class WorkOrderService
      *
      * Returns array with issue summary so the controller can inform the caller.
      */
-    public function issueAll(WorkOrder $wo, string $user, ?float $targetQty = null): array
+    public function issueAll(WorkOrder $wo, string $user, ?float $targetQty = null, array $lineOverrides = []): array
     {
         if (! in_array($wo->status, [self::STATUS_RELEASED, self::STATUS_IN_PROGRESS])) {
             throw new \RuntimeException('Work order must be Released or In Progress to issue materials.');
         }
 
         $wo->load('items');
-        $plannedQty  = (float) $wo->planned_qty;
-        $targetQty   = $targetQty ?? $plannedQty;
-        $scaleFactor = $plannedQty > 0 ? $targetQty / $plannedQty : 1.0;
+        $plannedQty = (float) $wo->planned_qty;
+        $targetQty  = $targetQty ?? $plannedQty;
+
+        // A per-line override caps what THIS WHOLE ISSUE can achieve, not just
+        // that one line — e.g. entering 1ml of starter culture when the BOM
+        // needs 0.5ml/unit means "I only have enough of this for 2 units,"
+        // not "issue exactly 1ml and leave every other line at the full
+        // target." Computing the achievable output up front and scaling every
+        // line — touched or not — to that single number is what keeps
+        // qty_issued uniformly consistent across the whole BOM, so nothing is
+        // ever left over to reconcile as "unused" or "spoiled" later.
+        $achievableQty = $targetQty;
+        foreach ($wo->items as $line) {
+            if (! array_key_exists($line->id, $lineOverrides)) continue;
+            $perUnitReq = $plannedQty > 0 ? (float) $line->qty_required / $plannedQty : 0;
+            if ($perUnitReq <= 0) continue;
+            $impliedQty    = (float) $lineOverrides[$line->id] / $perUnitReq;
+            $achievableQty = min($achievableQty, $impliedQty);
+        }
+        $achievableQty = max(0.0, $achievableQty);
+        $scaleFactor    = $plannedQty > 0 ? $achievableQty / $plannedQty : 1.0;
+        $targetQty      = $achievableQty; // what's reported back as the target actually pursued
 
         // ── Step 1: compute target per line and check stock ───────────────────
         $toIssueLines  = [];   // need to consume more from stock
@@ -145,9 +164,9 @@ class WorkOrderService
             $current = (float) $line->qty_issued;
             $delta   = round($target - $current, 6);
 
-            if (abs($delta) < 0.000001) continue;  // effectively zero
+            // if (abs($delta) < 0.000001) continue;  // effectively zero
 
-            if ($delta > 0) {
+            if ($delta >= 0) {
                 $soh = max(0.0, (float) DB::table('stock_movements')
                     ->where('stock_id', $line->component_code)->sum('qty'));
 
@@ -160,12 +179,13 @@ class WorkOrderService
                     ];
                 }
                 $toIssueLines[] = ['line' => $line, 'delta' => $delta, 'target' => $target, 'soh' => $soh];
+                
             } else {
                 // Negative delta — return excess to stock
                 $toReverseLines[] = ['line' => $line, 'delta' => $delta, 'target' => $target];
             }
         }
-
+        
         // ── Step 2: bottleneck ratio (for issue lines only) ───────────────────
         $bottleneck = 1.0;
         if (!empty($toIssueLines)) {
@@ -201,6 +221,7 @@ class WorkOrderService
                 $line    = $p['line'];
                 $qty     = round($p['delta'] * $bottleneck, 6);
                 $qty     = min($qty, $p['soh']);
+                
                 if ($qty <= 0) continue;
 
                 $item     = DB::table('items')->where('stock_id', $line->component_code)->first();
@@ -293,34 +314,150 @@ class WorkOrderService
         ];
     }
 
+    const SHORTFALL_UNUSED  = 'unused';   // never physically consumed — return to stock
+    const SHORTFALL_SPOILED = 'spoiled';  // consumed/lost in process — stays deducted, no return
+
     /**
      * Complete a work order — record actual output qty and accumulate final costs.
+     *
+     * @param string|null $shortfallReason  Required only when actual_qty is below
+     *   what the issued materials would fully support. self::SHORTFALL_UNUSED
+     *   returns the exact BOM-computed excess to stock (never touched it);
+     *   self::SHORTFALL_SPOILED leaves qty_issued/cost as originally issued —
+     *   that material is gone, not sitting back on the shelf.
      */
-    public function complete(WorkOrder $wo, float $actualQty, string $user): void
+    public function complete(WorkOrder $wo, float $actualQty, string $user, ?string $shortfallReason = null): void
     {
         if ($wo->status !== self::STATUS_IN_PROGRESS) {
             throw new \RuntimeException('Only In Progress work orders can be completed.');
         }
 
-        $totalMaterial = (float) $wo->items()->sum(DB::raw('qty_issued * unit_cost'));
-        $totalLabour   = (float) $wo->labour()->sum('total_cost');
-        $totalOverhead = (float) $wo->overhead()->sum('amount');
-        $totalScrap    = round($totalMaterial * 0.03, 4);  // 3% scrap provision
-        $totalCost     = round($totalMaterial + $totalLabour + $totalOverhead + $totalScrap, 4);
-        $unitCost      = $actualQty > 0 ? round($totalCost / $actualQty, 4) : 0;
+        // Cap actual_qty at what the issued materials can physically support —
+        // under-producing from what was issued is normal (yield loss), but
+        // over-claiming output beyond issued materials creates finished-goods
+        // stock with no corresponding raw-material consumption (verified this
+        // was possible with zero validation: issuing 100% of BOM for a batch
+        // of 10 while completing at 14 receipted 4 units nobody's cups/labels
+        // ever went into; issuing only 50% while completing at the full planned
+        // qty did the same and also understated unit cost).
+        $lines = $wo->items()->where('qty_required', '>', 0)->get();
+        if ($lines->isNotEmpty()) {
+            $bottleneck = $lines->min(fn ($l) => min(1.0, (float) $l->qty_issued / (float) $l->qty_required));
+            $producibleFromIssued = round((float) $wo->planned_qty * $bottleneck, 4);
+            if ($actualQty > $producibleFromIssued * 1.0001) {
+                throw new \RuntimeException(sprintf(
+                    'Cannot complete at %.4f — issued materials only support %.4f %s (%.1f%% of BOM issued). Issue more materials first, or reduce the actual qty.',
+                    $actualQty, $producibleFromIssued, $wo->unit, $bottleneck * 100
+                ));
+            }
+        }
 
-        $wo->update([
-            'status'               => self::STATUS_COMPLETED,
-            'actual_qty_produced'  => $actualQty,
-            'completed_date'       => now()->toDateString(),
-            'total_material_cost'  => round($totalMaterial, 4),
-            'total_labour_cost'    => round($totalLabour, 4),
-            'total_overhead_cost'  => round($totalOverhead, 4),
-            'total_scrap_cost'     => $totalScrap,
-            'total_cost'           => $totalCost,
-            'unit_cost'            => $unitCost,
-            'completed_by'         => $user,
-        ]);
+        // actual output needed less than what was issued? Caller must say why —
+        // unused (never touched, goes back to stock) and spoiled (consumed/lost,
+        // stays deducted) have opposite effects on stock and must not be guessed.
+        $plannedQty      = (float) $wo->planned_qty;
+        $scaleToActual   = $plannedQty > 0 ? $actualQty / $plannedQty : 1.0;
+        $hasShortfall    = $wo->items->contains(fn ($l) => round((float) $l->qty_issued - (float) $l->qty_required * $scaleToActual, 6) > 0.000001);
+
+        if ($hasShortfall && ! in_array($shortfallReason, [self::SHORTFALL_UNUSED, self::SHORTFALL_SPOILED], true)) {
+            throw new \RuntimeException(
+                "Materials were issued for more than {$actualQty} {$wo->unit} needs. "
+                . "Specify whether the difference is '" . self::SHORTFALL_UNUSED . "' (never touched — return it to stock) "
+                . "or '" . self::SHORTFALL_SPOILED . "' (consumed/lost in the process — write it off, no return)."
+            );
+        }
+
+        DB::transaction(function () use ($wo, $actualQty, $scaleToActual, $shortfallReason, $user) {
+            $wo->load('items');
+            foreach ($wo->items as $line) {
+                // Exactly what actual_qty needed per the BOM ratio already baked
+                // into qty_required — never approximated, never re-derived.
+                $neededForActual = round((float) $line->qty_required * $scaleToActual, 6);
+                $excess          = round((float) $line->qty_issued - $neededForActual, 6);
+                if ($excess <= 0.000001) continue;
+
+                if ($shortfallReason === self::SHORTFALL_SPOILED) {
+                    // Spoiled — material is gone. Leave qty_issued/cost exactly as
+                    // issued; do not touch stock at all.
+                    continue;
+                }
+
+                $unitCost = (float) $line->unit_cost;
+                $cost     = round($excess * $unitCost, 4);
+
+                DB::table('stock_movements')->insert([
+                    'trans_no'      => $wo->id,
+                    'stock_id'      => $line->component_code,
+                    'type'          => self::TYPE_WO_ISSUE,
+                    'loc_code'      => $wo->location_code,
+                    'tran_date'     => now()->toDateString(),
+                    'qty'           => $excess, // positive = returning unused material to stock
+                    'price'         => $unitCost,
+                    'standard_cost' => $unitCost,
+                    'reference'     => $wo->wo_no,
+                    'comments'      => 'Material Return (unused — actual output below issued qty) — ' . $wo->product_description,
+                    'unique_key'    => \Illuminate\Support\Str::uuid()->toString(),
+                ]);
+
+                $line->update([
+                    'qty_issued' => $neededForActual,
+                    'line_total' => round($neededForActual * $unitCost, 4),
+                ]);
+
+                if ($cost > 0.0001) {
+                    $glSettings = DB::table('gl_settings')->first();
+                    $wipAccount = $glSettings?->items_wip_account ?: '103000';
+                    $itemMaster = DB::table('items')->where('stock_id', $line->component_code)->first();
+                    $invAccount = $itemMaster?->inventory_account ?: ($glSettings?->items_inventory_account ?: '101010');
+                    $glBase     = ['trans_no' => $wo->id, 'tran_date' => now()->toDateString(), 'reference' => $wo->wo_no, 'created_by' => $user];
+
+                    DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $invAccount, 'narration' => 'Material Return — ' . $wo->wo_no, 'amount' => $cost]));
+                    DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_ISSUE, 'account_code' => $wipAccount, 'narration' => 'WIP — ' . $wo->wo_no, 'amount' => -$cost]));
+                }
+            }
+
+            $totalMaterial = (float) $wo->items()->sum(DB::raw('qty_issued * unit_cost'));
+            $totalLabour   = (float) $wo->labour()->sum('total_cost');
+            $totalOverhead = (float) $wo->overhead()->sum('amount');
+            // Scrap provision — configurable per BOM (Bom::scrap_pct). Not set
+            // (or no BOM at all, e.g. a standalone WO) means 0 — no provision —
+            // not the old flat 3% default.
+            $scrapPct      = $wo->bom?->scrap_pct ?? 0.0;
+            $totalScrap    = round($totalMaterial * ($scrapPct / 100), 4);
+            $totalCost     = round($totalMaterial + $totalLabour + $totalOverhead + $totalScrap, 4);
+            $unitCost      = $actualQty > 0 ? round($totalCost / $actualQty, 4) : 0;
+
+            $wo->update([
+                'status'               => self::STATUS_COMPLETED,
+                'actual_qty_produced'  => $actualQty,
+                'completed_date'       => now()->toDateString(),
+                'total_material_cost'  => round($totalMaterial, 4),
+                'total_labour_cost'    => round($totalLabour, 4),
+                'total_overhead_cost'  => round($totalOverhead, 4),
+                'total_scrap_cost'     => $totalScrap,
+                'total_cost'           => $totalCost,
+                'unit_cost'            => $unitCost,
+                'completed_by'         => $user,
+            ]);
+
+            // A WO created from a Production Plan item (via "Create WO") never fed
+            // its output back to the plan — the Plan Items Progress table stayed at
+            // 0%/"Create WO" forever even after the linked WO closed, inviting a
+            // duplicate WO for an already-fulfilled item. Sync it here, where
+            // actual output is recorded, and auto-complete the plan once every
+            // item is fully produced (mirrors ProductionPlanController::execute()).
+            if ($wo->production_plan_item_id) {
+                $planItem = \App\Models\ProductionPlanItem::find($wo->production_plan_item_id);
+                if ($planItem) {
+                    $planItem->increment('actual_qty', $actualQty);
+
+                    $plan = \App\Models\ProductionPlan::with('items')->find($planItem->production_plan_id);
+                    if ($plan && $plan->items->every(fn ($i) => $i->actual_qty >= $i->planned_qty)) {
+                        $plan->update(['status' => 'completed']);
+                    }
+                }
+            }
+        });
     }
 
     /**

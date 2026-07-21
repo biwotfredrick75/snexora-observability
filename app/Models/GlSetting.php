@@ -42,9 +42,21 @@ class GlSetting extends Model
         // Suppliers and Purchasing Defaults
         'payable_account',
         'purchase_discount_account',
+        'supplier_advance_account',
         'grn_clearing_account',
         'receival_required_by',
         'show_po_item_codes',
+        // Farmers (Dairy) Defaults
+        'farmers_payable_account',
+        'farmers_bank_account',
+        'default_tare_kg',
+        // SACCO Defaults
+        'sacco_savings_liability_account',
+        'sacco_share_capital_account',
+        'sacco_loans_receivable_account',
+        'sacco_loan_interest_income_account',
+        'sacco_cash_account',
+        'sacco_savings_interest_rate_pct',
         // Inventory
         'allow_negative_inventory',
         'no_zero_amounts_service',
@@ -78,6 +90,8 @@ class GlSetting extends Model
             'default_credit_invoices'    => 'float',
             'delivery_over_receive_allowance' => 'float',
             'invoice_over_charge_allowance'   => 'float',
+            'default_tare_kg'                 => 'float',
+            'sacco_savings_interest_rate_pct' => 'float',
         ];
     }
 }

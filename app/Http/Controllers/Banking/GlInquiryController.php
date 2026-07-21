@@ -121,7 +121,7 @@ class GlInquiryController extends Controller
                 'g.account_code', 'a.name as account_name',
                 'd1.name as dimension1_name',
                 'd2.name as dimension2_name',
-                'g.reference', 'g.narration',
+                'g.reference', 'g.narration', 'g.created_by',
                 DB::raw('CASE WHEN g.amount > 0 THEN g.amount ELSE 0 END as debit'),
                 DB::raw('CASE WHEN g.amount < 0 THEN ABS(g.amount) ELSE 0 END as credit'),
             ])
@@ -130,10 +130,26 @@ class GlInquiryController extends Controller
             ->orderBy('g.id')
             ->get();
 
+        // Counterparty — only resolvable for types that link back to a
+        // business record (currently: farmer payments). Falls back to
+        // nothing for generic journal/bank entries with no such link.
+        $counterparty = null;
+        if ((int) $request->type === 50) {
+            $counterparty = DB::table('farmer_payments as fp')
+                ->join('farmers as f', 'f.id', '=', 'fp.farmer_id')
+                ->where('fp.gl_type', $request->type)
+                ->where('fp.gl_trans_no', $request->trans_no)
+                ->first(['f.id', 'f.farmer_no', 'f.full_name']);
+        }
+
         return ApiResponse::success([
             'rows'         => $rows,
             'total_debit'  => $rows->sum('debit'),
             'total_credit' => $rows->sum('credit'),
+            'reference'    => $rows->first()->reference   ?? null,
+            'tran_date'    => $rows->first()->tran_date    ?? null,
+            'entered_by'   => $rows->first()->created_by   ?? null,
+            'counterparty' => $counterparty,
         ]);
     }
 }

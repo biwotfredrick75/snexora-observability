@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Manufacturing;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\WorkOrder;
@@ -11,6 +12,7 @@ use App\Services\Manufacturing\WorkOrderService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class WorkOrderController extends Controller
 {
@@ -161,8 +163,18 @@ class WorkOrderController extends Controller
         $user      = auth()->user()?->user_id ?? '';
         $targetQty = $request->filled('actual_qty') ? (float) $request->actual_qty : null;
 
+        // Optional per-line overrides staged in the UI before this click (never
+        // posted to stock on their own — this is the one action that posts).
+        // Lines not listed keep scaling proportionally from actual_qty.
+        $lineOverrides = [];
+        foreach ($request->input('lines', []) as $row) {
+            if (isset($row['item_id'])) {
+                $lineOverrides[(int) $row['item_id']] = (float) ($row['qty'] ?? 0);
+            }
+        }
+
         try {
-            $result = $this->service->issueAll($wo, $user, $targetQty);
+            $result = $this->service->issueAll($wo, $user, $targetQty, $lineOverrides);
         } catch (\Throwable $e) {
             return ApiResponse::error($e->getMessage(), 422);
         }
@@ -177,6 +189,12 @@ class WorkOrderController extends Controller
             )
             : sprintf('Goods issue posted — materials adjusted for %.4f %s.', $result['target_qty'], $wo->unit);
 
+        try {
+            broadcast(new DashboardEvent('manufacturing', 'wo_issued', ['wo_no' => $wo->wo_no]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
+
         return ApiResponse::success([
             'work_order' => $wo->fresh(['items', 'bom', 'workCentre', 'labour', 'overhead']),
             'issue'      => $result,
@@ -188,6 +206,7 @@ class WorkOrderController extends Controller
         $wo   = WorkOrder::findOrFail($id);
         $data = $request->validate([
             'actual_qty'              => 'required|numeric|min:0.0001',
+            'shortfall_reason'        => ['nullable', Rule::in([WorkOrderService::SHORTFALL_UNUSED, WorkOrderService::SHORTFALL_SPOILED])],
             'byproducts'              => 'nullable|array',
             'byproducts.*.stock_id'   => 'required_with:byproducts|string|exists:items,stock_id',
             'byproducts.*.qty'        => 'required_with:byproducts|numeric|min:0.0001',
@@ -197,7 +216,7 @@ class WorkOrderController extends Controller
         $user = auth()->user()?->user_id ?? '';
         DB::beginTransaction();
         try {
-            $this->service->complete($wo, (float) $data['actual_qty'], $user);
+            $this->service->complete($wo, (float) $data['actual_qty'], $user, $data['shortfall_reason'] ?? null);
 
             // Register by-products
             foreach ($data['byproducts'] ?? [] as $bp) {
@@ -240,6 +259,13 @@ class WorkOrderController extends Controller
             DB::rollBack();
             return ApiResponse::error($e->getMessage(), 422);
         }
+
+        try {
+            broadcast(new DashboardEvent('manufacturing', 'wo_completed', ['wo_no' => $wo->wo_no]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
+
         return ApiResponse::success($wo->fresh(['items', 'bom', 'workCentre', 'labour', 'overhead']), 'Work order completed — costs calculated');
     }
 
@@ -325,42 +351,15 @@ class WorkOrderController extends Controller
         return ApiResponse::created($overhead, 'Overhead entry added and posted to GL');
     }
 
-    // ── Update a single BOM line's qty_issued ────────────────────────────────
-    public function updateItem(Request $request, int $id, int $itemId): JsonResponse
-    {
-        $wo = WorkOrder::findOrFail($id);
-
-        if (! in_array($wo->status, [WorkOrderService::STATUS_RELEASED, WorkOrderService::STATUS_IN_PROGRESS])) {
-            return ApiResponse::error('Material lines can only be edited on Released or In Progress work orders.', 422);
-        }
-
-        $data = $request->validate(['qty_issued' => 'required|numeric|min:0']);
-
-        $line = \App\Models\WorkOrderItem::where('id', $itemId)
-            ->where('work_order_id', $id)
-            ->firstOrFail();
-
-        $line->update([
-            'qty_issued' => round((float) $data['qty_issued'], 6),
-            'line_total' => round((float) $data['qty_issued'] * (float) $line->unit_cost, 4),
-        ]);
-
-        $wo->update([
-            'total_material_cost' => round(
-                $wo->items()->sum(DB::raw('qty_issued * unit_cost')),
-                4
-            ),
-        ]);
-
-        return ApiResponse::updated($wo->fresh(['items', 'bom', 'workCentre', 'labour', 'overhead']));
-    }
-
     // ── Cost sheet (for reporting) ─────────────────────────────────────────────
     public function costSheet(int $id): JsonResponse
     {
         $wo = WorkOrder::with(['bom', 'workCentre', 'mfgType', 'items', 'labour', 'overhead', 'byproducts'])->findOrFail($id);
 
-        $grossMarginPct  = 35;
+        // Both configurable per BOM (Bom::scrap_pct / target_margin_pct) —
+        // fall back to the historical flat values if the WO has no BOM.
+        $scrapPct        = $wo->bom?->scrap_pct ?? 0;
+        $grossMarginPct  = $wo->bom?->target_margin_pct ?? 35;
         $unitCost        = (float) $wo->unit_cost;
         $actualQty       = (float) ($wo->actual_qty_produced ?: $wo->planned_qty);
         $sellingPrice    = $unitCost > 0 ? round($unitCost / (1 - $grossMarginPct / 100), 2) : 0;
@@ -370,11 +369,11 @@ class WorkOrderController extends Controller
         $sheet = [
             'work_order'    => $wo,
             'cost_summary'  => [
-                ['label' => 'Direct Materials',    'batch_total' => (float) $wo->total_material_cost,  'per_unit' => $perUnit($wo->total_material_cost)],
-                ['label' => 'Direct Labour',       'batch_total' => (float) $wo->total_labour_cost,    'per_unit' => $perUnit($wo->total_labour_cost)],
-                ['label' => 'Variable Overhead',   'batch_total' => (float) $wo->total_overhead_cost,  'per_unit' => $perUnit($wo->total_overhead_cost)],
-                ['label' => 'Scrap / Waste (3%)',  'batch_total' => (float) $wo->total_scrap_cost,     'per_unit' => $perUnit($wo->total_scrap_cost)],
-                ['label' => 'TOTAL COST',          'batch_total' => (float) $wo->total_cost,           'per_unit' => $unitCost],
+                ['label' => 'Direct Materials',             'batch_total' => (float) $wo->total_material_cost, 'per_unit' => $perUnit($wo->total_material_cost)],
+                ['label' => 'Direct Labour',                'batch_total' => (float) $wo->total_labour_cost,   'per_unit' => $perUnit($wo->total_labour_cost)],
+                ['label' => 'Variable Overhead',             'batch_total' => (float) $wo->total_overhead_cost, 'per_unit' => $perUnit($wo->total_overhead_cost)],
+                ['label' => "Scrap / Waste ({$scrapPct}%)",  'batch_total' => (float) $wo->total_scrap_cost,    'per_unit' => $perUnit($wo->total_scrap_cost)],
+                ['label' => 'TOTAL COST',                    'batch_total' => (float) $wo->total_cost,          'per_unit' => $unitCost],
             ],
             'pricing'       => [
                 'unit_cost'              => $unitCost,

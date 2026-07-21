@@ -12,6 +12,7 @@ class FarmerPayment extends Model
         'farmer_id', 'from_account', 'date_paid', 'reference', 'type',
         'withholding_tax_rate', 'amount_discount', 'amount_payment',
         'bank_charge', 'cheque_no', 'memo', 'created_by',
+        'gl_trans_no', 'gl_type',
     ];
 
     protected $casts = [

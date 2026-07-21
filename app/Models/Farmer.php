@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Farmer extends Model
@@ -16,10 +17,13 @@ class Farmer extends Model
         'spouse_name', 'spouse_phone', 'spouse_account_no',
         'next_of_kin_name', 'next_of_kin_account_no',
         'member_no', 'related_member_nos', 'director_name',
+        'latitude', 'longitude',
     ];
 
     protected $casts = [
-        'dob' => 'date',
+        'dob'       => 'date',
+        'latitude'  => 'float',
+        'longitude' => 'float',
     ];
 
     public function contacts(): HasMany
@@ -35,5 +39,10 @@ class Farmer extends Model
     public function route(): BelongsTo
     {
         return $this->belongsTo(MilkRoute::class, 'route_id');
+    }
+
+    public function saccoMembership(): HasOne
+    {
+        return $this->hasOne(SaccoMember::class, 'farmer_id');
     }
 }

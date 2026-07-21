@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Setup;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\ActivityLog;
 use App\Models\EspProvider;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
@@ -69,6 +70,9 @@ class UserController extends Controller
 
         $this->syncEspProviderLink($user, $validated['esp_provider_id'] ?? null);
 
+        ActivityLog::record('created', "Created user {$user->user_id} ({$user->real_name})", $user,
+            new: ['user_id' => $user->user_id, 'real_name' => $user->real_name, 'role' => $validated['role'] ?? null]);
+
         return ApiResponse::created(
             $this->formatUser($user->fresh('roles')),
             'User created successfully'
@@ -82,6 +86,8 @@ class UserController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $user = User::findOrFail($id);
+        $before = $user->only(['real_name', 'phone', 'email', 'inactive', 'default_store']);
+        $beforeRole = $user->roles->first()?->name;
 
         $validated = $request->validate([
             'real_name'     => 'sometimes|string|max:100',
@@ -127,8 +133,13 @@ class UserController extends Controller
             $this->syncEspProviderLink($user, $espProviderId);
         }
 
+        $fresh = $user->fresh('roles');
+        ActivityLog::record('updated', "Updated user {$fresh->user_id} ({$fresh->real_name})", $fresh,
+            old: $before + ['role' => $beforeRole],
+            new: $fresh->only(['real_name', 'phone', 'email', 'inactive', 'default_store']) + ['role' => $fresh->roles->first()?->name]);
+
         return ApiResponse::updated(
-            $this->formatUser($user->fresh('roles')),
+            $this->formatUser($fresh),
             'User updated successfully'
         );
     }
@@ -154,6 +165,8 @@ class UserController extends Controller
     {
         $user = User::findOrFail($id);
         $user->update(['inactive' => true]);
+
+        ActivityLog::record('deleted', "Deactivated user {$user->user_id} ({$user->real_name})", $user);
 
         return ApiResponse::deleted('User deactivated successfully');
     }

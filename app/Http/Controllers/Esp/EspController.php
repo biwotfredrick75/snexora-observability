@@ -45,6 +45,17 @@ class EspController extends Controller
     public function indexProviders(Request $request): JsonResponse
     {
         $q = EspProvider::query();
+
+        // A caller linked to their own provider account only ever sees that
+        // one record — same convention as indexSales()/linkedProviderId():
+        // an agrovet manages their own provider profile, not the directory.
+        // Falls through to the full list for callers with no linked provider
+        // (admins managing the ESP module need to see/browse all of them).
+        $linkedProviderId = $this->linkedProviderId();
+        if ($linkedProviderId) {
+            $q->where('id', $linkedProviderId);
+        }
+
         if ($request->status) $q->where('status', $request->status);
         if ($request->search) $q->where(fn($w) => $w->where('name', 'like', "%{$request->search}%")->orWhere('esp_code', 'like', "%{$request->search}%"));
         return ApiResponse::success($q->orderBy('name')->get());
@@ -344,6 +355,17 @@ class EspController extends Controller
     public function indexSales(Request $request): JsonResponse
     {
         $linkedProviderId = $this->linkedProviderId();
+
+        // A grader-role login with no linked provider can never have created
+        // an ESP sale — storeSale() requires linkage and 403s otherwise. Such
+        // an account must see nothing here, not fall through to the
+        // company-wide view below — that view was only ever meant for
+        // unlinked staff/admin, and verified live on the phone: an unlinked
+        // grader account was otherwise shown a completely unrelated agrovet's
+        // sale (esp_id belonging to another provider entirely).
+        if (! $linkedProviderId && auth()->user()?->hasRole('grader')) {
+            return ApiResponse::success([]);
+        }
 
         $q = EspSale::with(['esp:id,name,esp_code']);
         if ($linkedProviderId) {

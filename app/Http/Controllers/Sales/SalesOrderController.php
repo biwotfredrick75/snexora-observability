@@ -59,6 +59,13 @@ class SalesOrderController extends Controller
         if ($v = $request->get('date_from')) $query->where('order_date', '>=', $v);
         if ($v = $request->get('date_to'))   $query->where('order_date', '<=', $v);
 
+        // Graders only see their own orders — same created_by scoping as
+        // MilkPurchaseController::index(). Office/web users (no grader role)
+        // keep the unscoped, all-orders view.
+        if (auth()->user()?->hasRole('grader')) {
+            $query->where('created_by', auth()->user()->user_id);
+        }
+
         $orders = $query->paginate(min((int) $request->get('per_page', 30), 200));
 
         // Flag orders that are already fully dispatched — the UI uses this to

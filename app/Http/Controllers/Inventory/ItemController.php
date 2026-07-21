@@ -51,7 +51,7 @@ class ItemController extends Controller
         $items = $query->limit($fetchLimit)->get([
             'stock_id', 'description', 'units', 'purchase_cost',
             'material_cost', 'labour_cost', 'overhead_cost',
-            'sales_account', 'cogs_account', 'inventory_account', 'tax_type_id',
+            'sales_account', 'cogs_account', 'inventory_account', 'tax_type_id','standard_cost',
         ]);
 
         // Check company setting for negative inventory

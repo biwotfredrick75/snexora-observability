@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Banking;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Services\GlPostingService;
@@ -177,6 +178,13 @@ class JournalEntryController extends Controller
                 'updated_at' => now(),
             ]);
         });
+
+        try {
+            broadcast(new DashboardEvent('gl', 'journal_posted', ['journal_no' => $journal->journal_no]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
+
         return ApiResponse::success(null, 'Journal posted');
     }
 
@@ -198,6 +206,14 @@ class JournalEntryController extends Controller
                 ]);
             });
             $posted++;
+        }
+
+        if ($posted > 0) {
+            try {
+                broadcast(new DashboardEvent('gl', 'journal_posted', ['count' => $posted]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
         }
 
         return ApiResponse::success(['posted' => $posted, 'failed' => $failed], "{$posted} journal(s) posted");

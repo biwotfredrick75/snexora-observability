@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Sales;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\CustomerDeposit;
@@ -75,7 +76,7 @@ class CustomerDepositController extends Controller
             'memo'               => 'nullable|string',
         ]);
 
-        return DB::transaction(function () use ($validated) {
+        $deposit = DB::transaction(function () use ($validated) {
             $createdBy   = auth()->user()?->user_id ?? 'system';
             $depositDate = $validated['deposit_date'];
             $amount      = (float) $validated['deposit_amount'];
@@ -116,8 +117,16 @@ class CustomerDepositController extends Controller
             $this->gl($deposit->id, $depositDate, $debtorsAccount, -$amount,
                 "Customer Deposit Debtors — {$depositNo}", $depositNo, $createdBy);
 
-            return ApiResponse::created($deposit->load('customer'), 'Deposit posted successfully');
+            return $deposit;
         });
+
+        try {
+            broadcast(new DashboardEvent('payments', 'deposit_posted', ['deposit_no' => $deposit->deposit_no, 'amount' => $deposit->deposit_amount]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
+
+        return ApiResponse::created($deposit->load('customer'), 'Deposit posted successfully');
     }
 
     // ── Allocate deposit to invoices ──────────────────────────────────────────
@@ -165,7 +174,9 @@ class CustomerDepositController extends Controller
             return ApiResponse::validationError(['allocations' => $errors]);
         }
 
-        return DB::transaction(function () use ($deposit, $request, $unallocated) {
+        $appliedTotal = 0.0;
+
+        $response = DB::transaction(function () use ($deposit, $request, $unallocated, &$appliedTotal) {
             $createdBy  = auth()->user()?->user_id ?? 'system';
             $allocDate  = now()->toDateString();
             $totalApplied = 0.0;
@@ -205,11 +216,23 @@ class CustomerDepositController extends Controller
             $deposit->unallocated_amount = round($deposit->unallocated_amount - $totalApplied, 2);
             $deposit->save();
 
+            $appliedTotal = $totalApplied;
+
             return ApiResponse::success(
                 $deposit->fresh(['customer', 'allocations.invoice']),
                 'Allocated KES ' . number_format($totalApplied, 2) . ' to invoices'
             );
         });
+
+        if ($appliedTotal > 0) {
+            try {
+                broadcast(new DashboardEvent('payments', 'deposit_allocated', ['deposit_no' => $deposit->deposit_no, 'amount' => $appliedTotal]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
+        }
+
+        return $response;
     }
 
     // ── Cancel ────────────────────────────────────────────────────────────────

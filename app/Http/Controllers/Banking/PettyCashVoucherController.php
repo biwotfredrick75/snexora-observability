@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Banking;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\PettyCashFund;
@@ -142,6 +143,12 @@ class PettyCashVoucherController extends Controller
             $this->postVoucherGl($voucher, $fund, $userId);
             $fund->decrement('current_balance', $voucher->amount);
         });
+
+        try {
+            broadcast(new DashboardEvent('gl', 'petty_cash_posted', ['voucher_id' => $voucher->id, 'amount' => $voucher->amount]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
 
         return ApiResponse::success(null, 'Voucher approved');
     }

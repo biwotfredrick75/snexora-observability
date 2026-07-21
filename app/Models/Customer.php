@@ -19,7 +19,7 @@ class Customer extends Model
         'current_credit', 'credit_status_id', 'credit_invoices_allowed',
         'prompt_payment_discount', 'general_notes',
         'dimension_id', 'dimension2_id',
-        'inactive',
+        'inactive', 'latitude', 'longitude',
     ];
 
     protected $casts = [
@@ -32,6 +32,8 @@ class Customer extends Model
         'dimension_id'             => 'integer',
         'dimension2_id'            => 'integer',
         'credit_status_id'         => 'integer',
+        'latitude'                 => 'float',
+        'longitude'                => 'float',
     ];
 
     public function branches(): HasMany

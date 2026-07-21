@@ -61,9 +61,21 @@ class GlSettingController extends Controller
             // Suppliers and Purchasing Defaults
             'payable_account'                 => 'sometimes|nullable|string|max:20',
             'purchase_discount_account'       => 'sometimes|nullable|string|max:20',
+            'supplier_advance_account'        => 'sometimes|nullable|string|max:20',
             'grn_clearing_account'            => 'sometimes|nullable|string|max:20',
             'receival_required_by'            => 'sometimes|integer|min:0',
             'show_po_item_codes'              => 'sometimes|boolean',
+            // Farmers (Dairy) Defaults
+            'farmers_payable_account'         => 'sometimes|nullable|string|max:20',
+            'farmers_bank_account'            => 'sometimes|nullable|string|max:20',
+            'default_tare_kg'                 => 'sometimes|numeric|min:0',
+            // SACCO Defaults
+            'sacco_savings_liability_account'     => 'sometimes|nullable|string|max:20',
+            'sacco_share_capital_account'         => 'sometimes|nullable|string|max:20',
+            'sacco_loans_receivable_account'      => 'sometimes|nullable|string|max:20',
+            'sacco_loan_interest_income_account'  => 'sometimes|nullable|string|max:20',
+            'sacco_cash_account'                  => 'sometimes|nullable|string|max:20',
+            'sacco_savings_interest_rate_pct'     => 'sometimes|nullable|numeric|min:0|max:100',
             // Inventory
             'allow_negative_inventory'        => 'sometimes|boolean',
             'no_zero_amounts_service'         => 'sometimes|boolean',

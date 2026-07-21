@@ -89,6 +89,11 @@ class RolePermissionSeeder extends Seeder
             'view-esp',
             'manage-esp',
 
+            // SACCO Module (Member Savings, Shares & Loans)
+            'view-sacco',
+            'manage-sacco',
+            'approve-sacco-loans',
+
             // HRM Module
             'view-hrm',
             'manage-hrm',
@@ -154,6 +159,19 @@ class RolePermissionSeeder extends Seeder
                 'reports-manufacturing',
                 'view-casual-workers',
                 'manage-casual-workers',
+            ],
+
+            'sacco_officer' => [
+                'view-dashboard',
+                'view-sacco',
+                'manage-sacco',
+            ],
+
+            'sacco_manager' => [
+                'view-dashboard',
+                'view-sacco',
+                'manage-sacco',
+                'approve-sacco-loans',
             ],
 
             'user' => [

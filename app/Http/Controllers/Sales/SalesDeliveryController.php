@@ -96,6 +96,13 @@ class SalesDeliveryController extends Controller
             $query->where('status', 'placed')->whereNotIn('id', $fullyInvoicedIds);
         }
 
+        // Graders only see their own deliveries — same created_by scoping as
+        // MilkPurchaseController::index(). Office/web users (no grader role)
+        // keep the unscoped, all-deliveries view.
+        if (auth()->user()?->hasRole('grader')) {
+            $query->where('created_by', auth()->user()->user_id);
+        }
+
         $deliveries = $query->paginate(min((int) $request->get('per_page', 30), 200));
 
         return ApiResponse::paginated($deliveries, 'Deliveries retrieved');

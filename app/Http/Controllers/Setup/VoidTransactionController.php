@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Setup;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\ActivityLog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -16,7 +17,14 @@ class VoidTransactionController extends Controller
      *   num_col      (human-readable doc number column — may be string like "INV/001/2026"),
      *   date_col,
      *   ref_col      (optional extra reference, null to skip),
-     *   statuses     (null = no status filter; array = exclude voided/void/cancelled),
+     *   void_status  (null = no status filter/update; string = the value written on
+     *                 void AND excluded from search results — must be a value the
+     *                 table's status column actually accepts. Most of these are ENUM
+     *                 columns limited to ('draft','placed'/'posted','cancelled') with
+     *                 no 'voided' member, so 'cancelled' is used everywhere it fits
+     *                 rather than a made-up value MySQL would silently truncate.
+     *                 supplier_credit_notes' enum('draft','posted') has neither —
+     *                 status is left untouched for that type, GL-reversal only.
      * ]
      *
      * Range search always uses `id` because doc numbers are formatted strings.
@@ -26,17 +34,17 @@ class VoidTransactionController extends Controller
     {
         return [
             'journal_entry'           => ['journals',             'trans_no',  'tran_date',    'reference',   null],
-            'sales_invoice'           => ['sales_invoices',       'inv_no',    'invoice_date', 'customer_ref', true],
-            'customer_credit_note'    => ['credit_notes',         'cn_no',     'cn_date',      null,           true],
-            'customer_payment'        => ['customer_payments',    'payment_no','payment_date', 'reference',    true],
-            'delivery_note'           => ['sales_deliveries',     'dn_no',     'delivery_date','customer_ref', true],
-            'location_transfer'       => ['inventory_transfers',  'reference', 'date',         null,           true],
-            'inventory_adjustment'    => ['inventory_adjustments','id',        'date',         'reference',    true],
-            'purchase_order'          => ['purchase_orders',      'po_no',     'order_date',   'reference',    true],
+            'sales_invoice'           => ['sales_invoices',       'inv_no',    'invoice_date', 'customer_ref', 'cancelled'],
+            'customer_credit_note'    => ['credit_notes',         'cn_no',     'cn_date',      null,           'cancelled'],
+            'customer_payment'        => ['customer_payments',    'payment_no','payment_date', 'reference',    'cancelled'],
+            'delivery_note'           => ['sales_deliveries',     'dn_no',     'delivery_date','customer_ref', 'cancelled'],
+            'location_transfer'       => ['inventory_transfers',  'reference', 'date',         null,           'cancelled'],
+            'inventory_adjustment'    => ['inventory_adjustments','id',        'date',         'reference',    'cancelled'],
+            'purchase_order'          => ['purchase_orders',      'po_no',     'order_date',   'reference',    'cancelled'],
             'supplier_invoice'        => ['milk_supp_invoices',   'trans_no',  'tran_date',    'reference',    null],
-            'supplier_credit_note'    => ['supplier_credit_notes','scn_no',    'date',         'reference',    true],
-            'supplier_payment'        => ['payment_vouchers',     'pvn_no',    'date_paid',    'reference',    true],
-            'work_order'              => ['work_orders',          'wo_no',     'start_date',   null,           true],
+            'supplier_credit_note'    => ['supplier_credit_notes','scn_no',    'date',         'reference',    null],
+            'supplier_payment'        => ['payment_vouchers',     'pvn_no',    'date_paid',    'reference',    'cancelled'],
+            'work_order'              => ['work_orders',          'wo_no',     'start_date',   null,           'cancelled'],
         ];
     }
 
@@ -58,7 +66,7 @@ class VoidTransactionController extends Controller
             ], 'Search completed');
         }
 
-        [$table, $numCol, $dateCol, $refCol, $hasStatus] = $map[$type];
+        [$table, $numCol, $dateCol, $refCol, $voidStatus] = $map[$type];
 
         try {
             // journals uses trans_no as its numeric PK; everything else has an `id`
@@ -66,7 +74,7 @@ class VoidTransactionController extends Controller
 
             $query = DB::table($table)->whereBetween($rangeCol, [$from, $to]);
 
-            if ($hasStatus) {
+            if ($voidStatus) {
                 $query->whereNotIn('status', ['voided', 'void', 'cancelled', 'canceled']);
             }
 
@@ -119,7 +127,7 @@ class VoidTransactionController extends Controller
             return ApiResponse::validationError(['type' => 'Transaction type not supported.']);
         }
 
-        [$table, $numCol, $dateCol, $refCol, $hasStatus] = $map[$type];
+        [$table, $numCol, $dateCol, $refCol, $voidStatus] = $map[$type];
 
         try {
             $idCol = ($table === 'journals') ? 'trans_no' : 'id';
@@ -131,19 +139,23 @@ class VoidTransactionController extends Controller
 
             $row = (array) $row;
 
-            if ($hasStatus && isset($row['status'])) {
+            if ($voidStatus && isset($row['status'])) {
                 if (in_array($row['status'], ['voided', 'void', 'cancelled', 'canceled'])) {
                     return ApiResponse::validationError(['status' => 'This transaction is already voided.']);
                 }
 
                 DB::table($table)
                     ->where($idCol, $id)
-                    ->update(['status' => 'voided', 'updated_at' => now()]);
+                    ->update(['status' => $voidStatus, 'updated_at' => now()]);
             }
 
             // Reverse any GL entries
             $docNo = $row[$numCol] ?? $id;
             $this->reverseGlEntries($type, $docNo, $validated['void_date'], $validated['reason'] ?? '');
+
+            ActivityLog::record('voided', "Voided {$type} #{$docNo}" . (!empty($validated['reason']) ? " — {$validated['reason']}" : ''),
+                old: ['status' => $row['status'] ?? null],
+                new: ['type' => $type, 'transaction_id' => $id, 'reason' => $validated['reason'] ?? null]);
 
             return ApiResponse::success(null, 'Transaction voided successfully');
 

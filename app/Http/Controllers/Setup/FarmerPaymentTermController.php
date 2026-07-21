@@ -25,7 +25,7 @@ class FarmerPaymentTermController extends Controller
     {
         $validated = $request->validate([
             'description'    => 'required|string|max:100',
-            'type'           => 'required|in:prepayment,after_days,cash,end_of_month',
+            'type'           => 'required|in:prepayment,after_days,cash,end_of_month,other',
             'due_after_days' => 'nullable|integer|min:0',
             'shift'          => 'nullable|string|max:20',
         ]);
@@ -42,7 +42,7 @@ class FarmerPaymentTermController extends Controller
 
         $validated = $request->validate([
             'description'    => 'sometimes|string|max:100',
-            'type'           => 'sometimes|in:prepayment,after_days,cash,end_of_month',
+            'type'           => 'sometimes|in:prepayment,after_days,cash,end_of_month,other',
             'due_after_days' => 'nullable|integer|min:0',
             'shift'          => 'nullable|string|max:20',
             'inactive'       => 'sometimes|boolean',

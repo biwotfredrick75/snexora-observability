@@ -11,11 +11,16 @@ class MilkLocationTransfer extends Model
     protected $fillable = [
         'from_location_id', 'to_location_id', 'transfer_date',
         'shift_id', 'quantity', 'quality_notes', 'status', 'created_by',
+        'trip_ref', 'transporter_id',
+        'dispatch_gross_weight', 'dispatch_tare_weight', 'dispatch_net_weight',
     ];
 
     protected $casts = [
-        'transfer_date' => 'date',
-        'quantity'      => 'float',
+        'transfer_date'         => 'date',
+        'quantity'              => 'float',
+        'dispatch_gross_weight' => 'float',
+        'dispatch_tare_weight'  => 'float',
+        'dispatch_net_weight'   => 'float',
     ];
 
     public function fromLocation(): BelongsTo
@@ -31,5 +36,10 @@ class MilkLocationTransfer extends Model
     public function shift(): BelongsTo
     {
         return $this->belongsTo(MilkCollectionShift::class, 'shift_id');
+    }
+
+    public function transporter(): BelongsTo
+    {
+        return $this->belongsTo(InventoryLocation::class, 'transporter_id');
     }
 }

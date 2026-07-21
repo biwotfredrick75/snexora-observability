@@ -8,6 +8,8 @@ use App\Models\FarmerDirectInvoice;
 use App\Models\FarmerDirectInvoiceItem;
 use App\Models\GldTransaction;
 use App\Models\StockMovement;
+use App\Events\DashboardEvent;
+use App\Services\Esp\PartyCreditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -97,30 +99,35 @@ class FarmerDirectInvoiceController extends Controller
             return ApiResponse::notFound('Farmer not found');
         }
 
-        // Credit: sum of placed invoices not yet settled
-        $currentCredit = (float) FarmerDirectInvoice::where('farmer_id', $farmerId)
+        // Credit score follows the same formula as the ESP module (see PartyCreditService):
+        // this month's milk value minus already-invoiced ESP sales and checkoffs/advances.
+        // Direct invoices already placed draw against that same milk-value pool, so they're
+        // subtracted here too — otherwise a farmer could double-spend across both channels.
+        $score = app(PartyCreditService::class)->farmerScore((int) $farmerId);
+
+        $directInvoicesPlaced = (float) FarmerDirectInvoice::where('farmer_id', $farmerId)
             ->where('status', 'placed')
             ->sum('amount_total');
 
-        // Milk this month: quantity + gross value
-        $milkAgg = DB::table('milk_purchase_items')
+        $netBalance    = $score['gross_value'] - $score['already_invoiced'] - $score['current_debts'] - $directInvoicesPlaced;
+        $currentCredit = round(max(0.0, $netBalance), 2);
+        $currentDebt   = round(max(0.0, -$netBalance), 2);
+
+        // Milk this month: quantity
+        $totalMilk = (float) DB::table('milk_purchase_items')
             ->join('milk_purchases', 'milk_purchases.id', '=', 'milk_purchase_items.purchase_id')
             ->where('milk_purchases.route_id', $farmer->route_id)
             ->whereMonth('milk_purchases.invoice_date', now()->month)
             ->whereYear('milk_purchases.invoice_date', now()->year)
             ->where('milk_purchase_items.farmer_id', $farmerId)
-            ->selectRaw('COALESCE(SUM(quantity),0) as qty, COALESCE(SUM(total_price),0) as value')
-            ->first();
-
-        $totalMilk  = (float) ($milkAgg->qty   ?? 0);
-        $milkValue  = (float) ($milkAgg->value  ?? 0);
+            ->sum('milk_purchase_items.quantity');
 
         // Invoice credit limit
         $prefs         = DB::table('company_preferences')->first();
         $allowInvoicing = (bool) ($prefs->allow_farmer_invoicing ?? false);
         $limitPercent   = (float) ($prefs->farmer_invoice_limit_percent ?? 0);
         $invoiceLimit   = ($allowInvoicing && $limitPercent > 0)
-            ? round($milkValue * $limitPercent / 100, 2)
+            ? round($score['gross_value'] * $limitPercent / 100, 2)
             : null;
 
         $paymentTerms = null;
@@ -132,9 +139,9 @@ class FarmerDirectInvoiceController extends Controller
 
         return ApiResponse::success([
             'current_credit'         => $currentCredit,
-            'current_debt'           => 0,
+            'current_debt'           => $currentDebt,
             'total_milk'             => $totalMilk,
-            'milk_value'             => round($milkValue, 2),
+            'milk_value'             => round($score['gross_value'], 2),
             'allow_farmer_invoicing' => $allowInvoicing,
             'invoice_limit'          => $invoiceLimit,
             'payment_terms'          => $paymentTerms,
@@ -417,7 +424,9 @@ class FarmerDirectInvoiceController extends Controller
 
             // DR Debtors (farmers owe us)
             if ($totalGross != 0) {
-                $debtorsGl = ($company->debtors_gl_code ?? null) ?: ($glSetting->debtors_account ?? null) ?: 'DEBTORS';
+                // debtors_account was never a real gl_settings column —
+                // receivable_account is the actual AR control account.
+                $debtorsGl = ($company->debtors_gl_code ?? null) ?: ($glSetting->receivable_account ?? null) ?: '104018';
                 GldTransaction::create([
                     'trans_no'     => $invoice->id,
                     'type'         => StockMovement::TYPE_INVOICE,
@@ -428,6 +437,12 @@ class FarmerDirectInvoiceController extends Controller
                     'amount'       => round($totalGross, 2),
                     'created_by'   => $createdBy,
                 ]);
+            }
+
+            try {
+                broadcast(new DashboardEvent('direct_sale', 'placed', ['inv_no' => $invNo, 'amount' => $totalGross]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
             }
 
             return ApiResponse::success($invoice->fresh(), "Invoice {$invNo} placed successfully");

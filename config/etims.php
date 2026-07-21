@@ -1,7 +1,7 @@
 <?php
 
 return [
-    'gateway_url' => env('ETIMS_GATEWAY_URL', 'http://localhost:8080'),
+    'gateway_url' => env('ETIMS_GATEWAY_URL', 'http://localhost:8088'),
     'api_key'     => env('ETIMS_API_KEY', 'your-secret-key-here'),
     'tin'         => env('ETIMS_TIN', ''),
     'bhf_id'      => env('ETIMS_BHF_ID', '00'),

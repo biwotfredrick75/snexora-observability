@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Inventory;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\GldTransaction;
@@ -237,6 +238,12 @@ class InventoryAdjustmentController extends Controller
                 );
             }
             throw $e;
+        }
+
+        try {
+            broadcast(new DashboardEvent('inventory', 'adjustment_posted', ['reference' => $adjustment->reference]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
         }
 
         return ApiResponse::updated($adjustment->fresh()->load('items.item'), 'Adjustment processed');

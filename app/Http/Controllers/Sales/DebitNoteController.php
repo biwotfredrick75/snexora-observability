@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Sales;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\Customer;
@@ -222,6 +223,12 @@ class DebitNoteController extends Controller
 
             return $dn->fresh(['items', 'customer', 'reason']);
         });
+
+        try {
+            broadcast(new DashboardEvent('debit_note', 'placed', ['dn_no' => $dn->dn_no, 'amount' => $dn->amount_total]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
 
         return ApiResponse::success($placed, 'Debit note placed');
     }

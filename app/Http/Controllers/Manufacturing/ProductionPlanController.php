@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\DB;
 
 class ProductionPlanController extends Controller
 {
+    public function __construct(private WorkOrderService $service) {}
+
     /** GET /manufacturing/production-plans */
     public function index(Request $request)
     {
@@ -181,8 +183,17 @@ class ProductionPlanController extends Controller
     /**
      * POST /manufacturing/production-plans/{id}/execute
      * Body: { items: [ { id: <itemId>, actual_qty: <float> }, … ] }
-     * - Transitions approved → in_progress on first call
-     * - Adds actual_qty to each item (accumulative)
+     *
+     * For each item, creates a real WorkOrder against its active BOM and runs it
+     * through the full release → issue-all → complete → settle lifecycle, so
+     * this button actually consumes raw materials and receipts finished goods —
+     * it used to only increment production_plan_items.actual_qty with no
+     * stock_movements at all.
+     *
+     * - Transitions approved → in_progress on first successful item
+     * - Adds the *actually produced* qty to each item (may be less than
+     *   requested if materials run short — issueAll() caps production at what
+     *   stock allows rather than failing outright)
      * - Auto-completes plan when all items actual_qty >= planned_qty
      */
     public function execute(Request $request, $id)
@@ -199,27 +210,107 @@ class ProductionPlanController extends Controller
             'items.*.actual_qty'=> 'required|numeric|min:0.001',
         ]);
 
-        DB::transaction(function () use ($request, $plan) {
-            foreach ($request->items as $row) {
-                $item = $plan->items->firstWhere('id', $row['id']);
-                if (!$item) continue;
-                $item->increment('actual_qty', (float) $row['actual_qty']);
-            }
+        $user    = Auth::user()?->user_id ?? 'system';
+        $results = [];
 
-            // Transition to in_progress if still approved
-            if ($plan->status === 'approved') {
-                $plan->update(['status' => 'in_progress']);
-            }
+        foreach ($request->items as $row) {
+            $item = $plan->items->firstWhere('id', $row['id']);
+            if (!$item) continue;
 
-            // Auto-complete when all items fully produced
-            $plan->load('items');
-            $allDone = $plan->items->every(fn ($i) => $i->actual_qty >= $i->planned_qty);
-            if ($allDone) {
-                $plan->update(['status' => 'completed']);
-            }
-        });
+            $requestedQty = (float) $row['actual_qty'];
 
-        return ApiResponse::updated($plan->fresh('items'));
+            try {
+                $outcome = DB::transaction(function () use ($plan, $item, $requestedQty, $user) {
+                    $bom = DB::table('boms')
+                        ->where('product_code', $item->stock_id)
+                        ->where('is_active', 1)
+                        ->orderByDesc('version')
+                        ->first();
+
+                    if (!$bom) {
+                        throw new \RuntimeException("No active BOM for {$item->stock_id} — cannot produce.");
+                    }
+
+                    $woItem = DB::table('items')->where('stock_id', $item->stock_id)->first();
+                    $today  = now()->toDateString();
+
+                    $wo = WorkOrder::create([
+                        'production_plan_id'      => $plan->id,
+                        'production_plan_item_id' => $item->id,
+                        'wo_no'                   => 'TEMP',
+                        'product_code'            => $item->stock_id,
+                        'product_description'     => $item->description ?? ($woItem?->description ?? $item->stock_id),
+                        'bom_id'                  => $bom->id,
+                        'mfg_type_id'             => $bom->mfg_type_id,
+                        'planned_qty'             => $requestedQty,
+                        'unit'                    => $woItem?->units ?? '',
+                        'start_date'              => $plan->plan_date ?? $today,
+                        'due_date'                => $plan->target_completion_date ?? $plan->plan_date ?? $today,
+                        'location_code'           => $plan->production_location ?? '',
+                        'output_location_code'    => $plan->production_location ?? '',
+                        'status'                  => WorkOrderService::STATUS_DRAFT,
+                        'created_by'              => $user,
+                    ]);
+                    $wo->update(['wo_no' => 'WO-' . now()->format('Y') . '-' . str_pad($wo->id, 4, '0', STR_PAD_LEFT)]);
+
+                    $this->service->release($wo, $user);
+                    $issue = $this->service->issueAll($wo, $user, $requestedQty);
+
+                    // issueAll() caps producible_qty at requestedQty (bottleneck <= 1),
+                    // so this never exceeds what was asked for.
+                    $producedQty = $issue['producible_qty'];
+                    $this->service->complete($wo, $producedQty, $user);
+                    $this->service->settle($wo, $user);
+
+                    return [
+                        'qty'       => $producedQty,
+                        'wo_no'     => $wo->wo_no,
+                        'partial'   => $issue['partial'],
+                        'shortages' => $issue['shortages'],
+                    ];
+                });
+
+                $item->increment('actual_qty', $outcome['qty']);
+                $results[] = [
+                    'item_id'      => $item->id,
+                    'stock_id'     => $item->stock_id,
+                    'success'      => true,
+                    'wo_no'        => $outcome['wo_no'],
+                    'qty_produced' => $outcome['qty'],
+                    'partial'      => $outcome['partial'],
+                    'shortages'    => $outcome['shortages'],
+                ];
+            } catch (\Throwable $e) {
+                $results[] = [
+                    'item_id'  => $item->id,
+                    'stock_id' => $item->stock_id,
+                    'success'  => false,
+                    'error'    => $e->getMessage(),
+                ];
+            }
+        }
+
+        $anySuccess = collect($results)->contains('success', true);
+        if ($plan->status === 'approved' && $anySuccess) {
+            $plan->update(['status' => 'in_progress']);
+        }
+
+        // Auto-complete when all items fully produced
+        $plan->load('items');
+        $allDone = $plan->items->every(fn ($i) => $i->actual_qty >= $i->planned_qty);
+        if ($allDone) {
+            $plan->update(['status' => 'completed']);
+        }
+
+        $anyFailed = collect($results)->contains('success', false);
+        $message = $anyFailed
+            ? 'Production recorded with errors on some items — see results.'
+            : ($plan->status === 'completed' ? 'Plan completed — all items produced.' : 'Production recorded — work orders created and materials issued.');
+
+        return ApiResponse::success([
+            'plan'    => $plan->fresh('items'),
+            'results' => $results,
+        ], $message);
     }
 
     /**

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\ActivityLog;
 use App\Models\Farmer;
 use App\Services\Auth\AuthService;
 use Illuminate\Http\JsonResponse;
@@ -37,8 +38,11 @@ class GraderAuthController extends Controller
         $user = $this->authService->authenticate($data['loc_code'], $data['password']);
 
         if (!$user) {
+            ActivityLog::record('login_failed', "Failed grader login attempt for loc_code {$data['loc_code']}");
             return ApiResponse::unauthorized('Invalid location code or password.');
         }
+
+        ActivityLog::record('login', "{$user->real_name} logged in (grader app)", actor: $user);
 
         $token = $user->createToken('Grader Token')->accessToken;
 
@@ -93,6 +97,7 @@ class GraderAuthController extends Controller
         $user = $request->user();
         if ($user) {
             $user->tokens()->update(['revoked' => true]);
+            ActivityLog::record('logout', "{$user->real_name} logged out (grader app)", actor: $user);
         }
 
         return ApiResponse::deleted('Logged out successfully');

@@ -83,21 +83,89 @@ class FarmerPaymentScheduleController extends Controller
 
         $farmerIds = $rows->pluck('farmer_id')->all();
 
-        // ── Checkoff deductions for the period ───────────────────────────────
-        $deductMap = DB::table('farmer_checkoff_entries')
+        // ── Every deduction source a real farmer payment run nets against —
+        // must mirror ProcessFarmerPaymentsBatch::runBatch() exactly, or this
+        // "preview" report understates what the office will actually pay out
+        // once they process the batch. This is read-only: unlike the batch
+        // job, nothing here is marked as settled/deducted.
+        $checkoffMap = DB::table('farmer_checkoff_entries')
             ->whereIn('farmer_id', $farmerIds)
             ->where('month', $month)->where('year', $year)
-            ->selectRaw('farmer_id, SUM(amount) AS total_deductions')
+            ->where('deducted', false)
+            ->selectRaw('farmer_id, SUM(amount) AS total')
             ->groupBy('farmer_id')
-            ->pluck('total_deductions', 'farmer_id');
+            ->pluck('total', 'farmer_id');
+
+        $advancesMap = DB::table('farmer_payments')
+            ->whereIn('farmer_id', $farmerIds)
+            ->where('type', 'advance')
+            ->where('recovered', false)
+            ->whereBetween('date_paid', [$dateFrom, $dateTo])
+            ->selectRaw('farmer_id, SUM(amount_payment) AS total')
+            ->groupBy('farmer_id')
+            ->pluck('total', 'farmer_id');
+
+        $invoicesMap = DB::table('farmer_direct_invoices')
+            ->whereIn('farmer_id', $farmerIds)
+            ->where('status', 'placed')
+            ->where('settled', false)
+            ->whereBetween('invoice_date', [$dateFrom, $dateTo])
+            ->selectRaw('farmer_id, SUM(amount_total) AS total')
+            ->groupBy('farmer_id')
+            ->pluck('total', 'farmer_id');
+
+        $espMap = DB::table('esp_farmer_sales')
+            ->where('party_type', 'farmer')
+            ->whereIn('party_id', $farmerIds)
+            ->where('party_deducted', false)
+            ->where('status', '!=', 'void')
+            ->selectRaw('party_id AS farmer_id, SUM(total_amount) AS total')
+            ->groupBy('party_id')
+            ->pluck('total', 'farmer_id');
+
+        $carryForwardMap = DB::table('farmer_carry_forwards')
+            ->whereIn('farmer_id', $farmerIds)
+            ->where('to_month', $month)
+            ->where('to_year', $year)
+            ->pluck('amount', 'farmer_id');
+
+        // Regular Sales module invoices against a customer linked to this
+        // farmer (customers.farmer_no) — a second, separate "sales to
+        // farmers" channel from farmer_direct_invoices above (e.g. a farmer
+        // buying at a company shop/POS as a normal customer). Joined against
+        // farmers.farmer_no rather than just checking customers.farmer_no is
+        // non-null, since a handful of customer records carry a farmer_no-
+        // shaped value that doesn't actually match any real farmer.
+        // Outstanding = amount_total minus whatever is already allocated via
+        // debtor_allocations — status stays 'placed' even once fully
+        // allocated (same as CustomerPaymentController), so without this an
+        // already-settled invoice would still show as a pending deduction.
+        $salesInvoiceMap = DB::table('sales_invoices as si')
+            ->join('customers as c', 'c.debtor_no', '=', 'si.debtor_no')
+            ->join('farmers as f2', 'f2.farmer_no', '=', 'c.farmer_no')
+            ->leftJoin('debtor_allocations as da', 'da.inv_id', '=', 'si.id')
+            ->whereIn('f2.id', $farmerIds)
+            ->where('si.status', 'placed')
+            ->whereBetween('si.invoice_date', [$dateFrom, $dateTo])
+            ->groupBy('f2.id', 'si.id', 'si.amount_total')
+            ->selectRaw('f2.id AS farmer_id, si.amount_total - COALESCE(SUM(da.amount), 0) AS outstanding')
+            ->get()
+            ->groupBy('farmer_id')
+            ->map(fn ($rows) => $rows->sum(fn ($r) => max(0, (float) $r->outstanding)));
 
         $result = [];
         $totGross = $totDeduct = $totNet = $totQty = 0;
 
         foreach ($rows as $row) {
-            $gross   = (float) $row->gross_amount;
-            $deduct  = (float) ($deductMap[$row->farmer_id] ?? 0);
-            $net     = round($gross - $deduct, 2);
+            $gross      = (float) $row->gross_amount;
+            $checkoff   = (float) ($checkoffMap[$row->farmer_id] ?? 0);
+            $advance    = (float) ($advancesMap[$row->farmer_id] ?? 0);
+            $invoice    = (float) ($invoicesMap[$row->farmer_id] ?? 0);
+            $esp        = (float) ($espMap[$row->farmer_id] ?? 0);
+            $carryFwd   = (float) ($carryForwardMap[$row->farmer_id] ?? 0);
+            $salesInv   = (float) ($salesInvoiceMap[$row->farmer_id] ?? 0);
+            $deduct     = round($checkoff + $advance + $invoice + $esp + $carryFwd + $salesInv, 2);
+            $net        = round(max(0, $gross - $deduct), 2);
 
             $result[] = [
                 'farmer_no'   => $row->farmer_no,
@@ -111,6 +179,14 @@ class FarmerPaymentScheduleController extends Controller
                 'total_qty'   => (float) $row->total_qty,
                 'gross'       => $gross,
                 'deductions'  => $deduct,
+                'deduction_breakdown' => [
+                    'checkoffs'      => round($checkoff, 2),
+                    'advances'       => round($advance, 2),
+                    'direct_invoices'=> round($invoice, 2),
+                    'sales_invoices' => round($salesInv, 2),
+                    'esp_purchases'  => round($esp, 2),
+                    'carry_forward'  => round($carryFwd, 2),
+                ],
                 'net_pay'     => $net,
             ];
 

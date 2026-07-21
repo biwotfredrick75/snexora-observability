@@ -23,8 +23,13 @@
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
-        <env name="DB_CONNECTION" value="sqlite"/>
-        <env name="DB_DATABASE" value=":memory:"/>
+        <!-- No pdo_sqlite extension is installed on this host, so tests fall
+             back to the same MySQL server as dev (DB_CONNECTION/host/user/
+             password come from .env, unchanged) but a dedicated database —
+             kept fully separate from the real DB_DATABASE=erp dev database.
+             Credentials are deliberately NOT hardcoded here since phpunit.xml
+             is version-controlled; only the (non-secret) database name differs. -->
+        <env name="DB_DATABASE" value="erp_testing"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

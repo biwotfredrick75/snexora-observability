@@ -13,7 +13,7 @@ class SalesDashboardController extends Controller
 {
     public function kpis(Request $request): JsonResponse
     {
-        $from         = $request->get('date_from', now()->startOfMonth()->toDateString());
+        $from         = $request->get('date_from', now()->toDateString());
         $to           = $request->get('date_to',   now()->toDateString());
         $locationId   = $request->get('location_id');
         $dimensionId  = $request->get('dimension_id');
@@ -55,7 +55,7 @@ class SalesDashboardController extends Controller
             // ── Q2: Outstanding balance ──────────────────────────────────────────
             $outstanding = DB::table('sales_invoices as i')
                 ->leftJoin(DB::raw('(SELECT inv_id, SUM(amount) as alloc FROM debtor_allocations GROUP BY inv_id) a'), 'a.inv_id', '=', 'i.id')
-                ->whereNotIn('i.status', ['cancelled'])
+                ->whereNotIn('i.status', ['cancelled', 'draft'])
                 ->selectRaw('COALESCE(SUM(i.amount_total - IFNULL(a.alloc,0)),0) as outstanding')
                 ->value('outstanding');
 
@@ -64,7 +64,7 @@ class SalesDashboardController extends Controller
                 ->leftJoin(DB::raw("(SELECT inv_id, SUM(amount) as alloc,
                         MAX(CASE WHEN allocated_date = CURDATE() THEN 1 ELSE 0 END) as settled_today
                     FROM debtor_allocations GROUP BY inv_id) a"), 'a.inv_id', '=', 'i.id')
-                ->whereNotIn('i.status', ['cancelled'])
+                ->whereNotIn('i.status', ['cancelled', 'draft'])
                 ->selectRaw("
                     SUM(CASE WHEN i.amount_total - IFNULL(a.alloc,0) <= 0.005 THEN 1 ELSE 0 END) as paid_count,
                     SUM(CASE WHEN i.amount_total - IFNULL(a.alloc,0) <= 0.005 AND a.settled_today = 1 THEN 1 ELSE 0 END) as paid_today_count,
@@ -85,12 +85,12 @@ class SalesDashboardController extends Controller
             $gl = DB::table('gld_transactions')
                 ->where('tran_date', '>=', $wideFrom)
                 ->where('tran_date', '<=', $to)
-                ->whereRaw("(account_code LIKE '5%' OR account_code IN ('BAD_DEBT','BANK_CHARGES','DISCOUNT'))")
+                ->whereRaw("(account_code LIKE '%501010%' OR account_code IN ('BAD_DEBT','BANK_CHARGES','DISCOUNT'))")
                 ->selectRaw("
-                    COALESCE(SUM(CASE WHEN tran_date >= ? AND tran_date <= ? AND account_code LIKE '5%' THEN amount END), 0) as cogs,
-                    COALESCE(SUM(CASE WHEN tran_date >= ? AND tran_date <= ? AND account_code LIKE '5%' THEN amount END), 0) as prev_cogs,
-                    COALESCE(SUM(CASE WHEN tran_date >= ? AND account_code LIKE '5%' THEN amount END), 0) as ytd_cogs,
-                    COALESCE(SUM(CASE WHEN tran_date >= ? AND account_code LIKE '5%' THEN amount END), 0) as mtd_cogs,
+                    COALESCE(SUM(CASE WHEN tran_date >= ? AND tran_date <= ? AND account_code LIKE '%501010%' THEN amount END), 0) as cogs,
+                    COALESCE(SUM(CASE WHEN tran_date >= ? AND tran_date <= ? AND account_code LIKE '%501010%' THEN amount END), 0) as prev_cogs,
+                    COALESCE(SUM(CASE WHEN tran_date >= ? AND account_code LIKE '%501010%' THEN amount END), 0) as ytd_cogs,
+                    COALESCE(SUM(CASE WHEN tran_date >= ? AND account_code LIKE '%501010%' THEN amount END), 0) as mtd_cogs,
                     COALESCE(SUM(CASE WHEN tran_date >= ? AND tran_date <= ? AND account_code IN ('BAD_DEBT','BANK_CHARGES','DISCOUNT') AND amount > 0 THEN amount END), 0) as opex,
                     COALESCE(SUM(CASE WHEN tran_date >= ? AND tran_date <= ? AND account_code IN ('BAD_DEBT','BANK_CHARGES','DISCOUNT') AND amount > 0 THEN amount END), 0) as prev_opex,
                     COALESCE(SUM(CASE WHEN tran_date >= ? AND account_code IN ('BAD_DEBT','BANK_CHARGES','DISCOUNT') AND amount > 0 THEN amount END), 0) as ytd_opex,
@@ -106,7 +106,7 @@ class SalesDashboardController extends Controller
                     $mtdFrom,
                 ])
                 ->first();
-
+                    // echo json_encode($gl );
             // ── Q4: Payments ─────────────────────────────────────────────────────
             $payments = DB::table('customer_payments')
                 ->whereBetween('payment_date', [$from, $to])
@@ -142,7 +142,7 @@ class SalesDashboardController extends Controller
             $topCustomers = DB::table('sales_invoices as i')
                 ->join('customers as c', 'c.debtor_no', '=', 'i.debtor_no')
                 ->whereBetween('i.invoice_date', [$from, $to])
-                ->whereNotIn('i.status', ['cancelled'])
+                ->whereNotIn('i.status', ['cancelled', 'draft'])
                 ->when($locationId,   fn($q) => $q->where('i.location_id',   $locationId))
                 ->when($dimensionId,  fn($q) => $q->where('i.dimension_id',  $dimensionId))
                 ->when($dimension2Id, fn($q) => $q->where('i.dimension2_id', $dimension2Id))
@@ -164,7 +164,7 @@ class SalesDashboardController extends Controller
                 ->join('sales_invoices as i', 'i.id', '=', 'li.inv_id')
                 ->join('items as it', 'it.stock_id', '=', 'li.stock_id')
                 ->leftJoin('item_categories as c', 'c.id', '=', 'it.category_id')
-                ->where('i.status', '!=', 'cancelled')
+                ->whereNotIn('i.status', ['cancelled', 'draft'])
                 ->where('i.invoice_date', '>=', $wideFrom)
                 ->where('i.invoice_date', '<=', $to)
                 ->when($locationId,   fn($q) => $q->where('i.location_id',   $locationId))
@@ -194,7 +194,7 @@ class SalesDashboardController extends Controller
             $storeRows = DB::table('sales_invoices as i')
                 ->leftJoin('inventory_locations as l', 'l.id', '=', 'i.location_id')
                 ->join('sales_invoice_items as li', 'li.inv_id', '=', 'i.id')
-                ->where('i.status', '!=', 'cancelled')
+                ->whereNotIn('i.status', ['cancelled', 'draft'])
                 ->where('i.invoice_date', '>=', $prevFrom)
                 ->where('i.invoice_date', '<=', $to)
                 ->when($locationId,   fn($q) => $q->where('i.location_id',   $locationId))
@@ -225,7 +225,7 @@ class SalesDashboardController extends Controller
                         'type'         => $row->loc_type,
                         'inv_count'    => (int) $row->inv_count,
                         'revenue'      => $revenue,
-                        'cogs'         => $cogs,
+                        'cogs'         =>  $cogs,
                         'gross_profit' => $gp,
                         'margin'       => $revenue > 0 ? round(($gp / $revenue) * 100, 1) : 0,
                         'trend_pct'    => $pct($revenue, $prevRev),
@@ -319,7 +319,7 @@ class SalesDashboardController extends Controller
 
     public function widgetData(Request $request): JsonResponse
     {
-        $from = $request->get('date_from', now()->startOfMonth()->toDateString());
+        $from = $request->get('date_from', now()->toDateString());
         $to   = $request->get('date_to',   now()->toDateString());
         $today = now()->toDateString();
 
@@ -428,14 +428,14 @@ class SalesDashboardController extends Controller
     {
         $locationId    = $request->get('location_id');
         $nullLocation  = $request->boolean('null_location'); // true = show invoices with no location
-        $from = $request->get('date_from', now()->startOfMonth()->toDateString());
+        $from = $request->get('date_from', now()->toDateString());
         $to   = $request->get('date_to',   now()->toDateString());
 
         $items = DB::table('sales_invoice_items as li')
             ->join('sales_invoices as i', 'i.id', '=', 'li.inv_id')
             ->leftJoin('items as it', 'it.stock_id', '=', 'li.stock_id')
             ->leftJoin('item_categories as c', 'c.id', '=', 'it.category_id')
-            ->where('i.status', '!=', 'cancelled')
+            ->whereNotIn('i.status', ['cancelled', 'draft'])
             ->whereBetween('i.invoice_date', [$from, $to])
             ->when($nullLocation, fn($q) => $q->whereNull('i.location_id'))
             ->when(!$nullLocation && $locationId !== null && $locationId !== '', fn($q) => $q->where('i.location_id', $locationId))
@@ -489,53 +489,83 @@ class SalesDashboardController extends Controller
 
     public function milkTraceability(Request $request): JsonResponse
     {
-        $from = $request->get('date_from', now()->startOfMonth()->toDateString());
-        $to   = $request->get('date_to',   now()->toDateString());
+        $from       = $request->get('date_from', now()->toDateString());
+        $to         = $request->get('date_to',   now()->toDateString());
+        $locationId = $request->get('location_id');
 
-        // Farmers — raw collection from individual farmer deliveries
+        $rawMilkStockId = DB::table('items')
+            ->where(fn ($q) => $q
+                ->where('long_description', 'like', '%RAW MILK%')
+                ->orWhere('description', 'like', '%RAW MILK%'))
+            ->value('stock_id') ?? 'MILK-RAW';
+
+        // Farmers — raw collection from individual farmer deliveries, for the
+        // selected period. Accepted only — a delivery that failed QC never
+        // entered inventory or got paid for (see MilkPurchaseApprovalService),
+        // so folding it into "supplied" here would overstate genuine intake.
+        // It's surfaced separately below instead, for visibility only.
+        // No location filter here: milk_purchases has no location_id column
+        // (only route_id/grader_id, and milk_routes.location_id is mostly
+        // unset — see the credit-limit fix) — silently filtering on a mostly-
+        // NULL mapping would just make this tile go blank, not scope it.
         $farmers = (float) DB::table('milk_purchase_items')
             ->join('milk_purchases', 'milk_purchases.id', '=', 'milk_purchase_items.purchase_id')
             ->whereBetween('milk_purchases.invoice_date', [$from, $to])
+            ->where('milk_purchase_items.quality_status', 'accepted')
             ->sum('milk_purchase_items.quantity');
 
-        // Center — received into GRN (filter by GRN delivery date)
-        $center = (float) DB::table('milk_grn_items')
-            ->join('milk_grn_batches', 'milk_grn_batches.id', '=', 'milk_grn_items.grn_batch_id')
-            ->whereBetween('milk_grn_batches.delivery_date', [$from, $to])
-            ->sum('milk_grn_items.qty_received');
+        // Rejected — failed QC at collection, recorded for reporting/farmer
+        // follow-up only. Never touches stock, GRN, or GL — this is purely
+        // visibility so the office can see and follow up on it.
+        $rejected = DB::table('milk_purchase_items')
+            ->join('milk_purchases', 'milk_purchases.id', '=', 'milk_purchase_items.purchase_id')
+            ->whereBetween('milk_purchases.invoice_date', [$from, $to])
+            ->where('milk_purchase_items.quality_status', 'rejected')
+            ->selectRaw('COUNT(*) as cnt, COALESCE(SUM(milk_purchase_items.quantity), 0) as qty')
+            ->first();
 
-        // Grader — filter by the grader's own collection date, not the purchase date
-        $grader = (float) DB::table('milk_grader_collections')
-            ->whereBetween('date_collected', [$from, $to])
-            ->sum('quantity');
-
-        // Factory — location transfers to factory (if any)
-        $factory = (float) DB::table('milk_location_transfers')
-            ->whereBetween('transfer_date', [$from, $to])
-            ->sum('quantity');
-
-        // Sold — raw milk sold via sales invoices (stock_id = 0001)
+        // Sold — raw milk sold via placed sales invoices, for the selected period
         $sold = (float) DB::table('sales_invoice_items')
             ->join('sales_invoices', 'sales_invoices.id', '=', 'sales_invoice_items.inv_id')
             ->whereBetween('sales_invoices.invoice_date', [$from, $to])
-            ->where('sales_invoice_items.stock_id', '0001')
+            ->where('sales_invoice_items.stock_id', $rawMilkStockId)
+            ->where('sales_invoices.status', '!=', 'draft')
+            ->when($locationId, fn ($q) => $q->where('sales_invoices.location_id', $locationId))
             ->sum('sales_invoice_items.qty');
 
+        // Stations — current on-hand raw-milk qty per location, a live
+        // snapshot (intentionally not date-ranged: stock on hand today
+        // includes milk received before $from — that's the correct reading
+        // of "how much milk is sitting here right now").
+        $stations = DB::table('stock_movements as sm')
+            ->join('inventory_locations as l', 'l.code', '=', 'sm.loc_code')
+            ->where('sm.stock_id', $rawMilkStockId)
+            ->where('l.inactive', 0)
+            ->whereNotIn('l.type', ['Vendor', 'SALES'])
+            ->when($locationId, fn ($q) => $q->where('l.id', $locationId))
+            ->groupBy('l.id', 'l.code', 'l.name', 'l.type')
+            ->havingRaw('SUM(sm.qty) > 0.001')
+            ->selectRaw('l.code, l.name, l.type, ROUND(SUM(sm.qty), 1) as current_qty')
+            ->orderByDesc('current_qty')
+            ->get();
+
         return ApiResponse::success([
-            'period'   => ['from' => $from, 'to' => $to],
-            'pipeline' => [
-                ['stage' => 'Farmers',   'qty' => round($farmers, 1), 'icon' => 'farmers'],
-                ['stage' => 'Center',    'qty' => round($center,  1), 'icon' => 'center'],
-                ['stage' => 'Grader',    'qty' => round($grader,  1), 'icon' => 'grader'],
-                ['stage' => 'Factory',   'qty' => round($factory, 1), 'icon' => 'factory'],
-                ['stage' => 'Sold',      'qty' => round($sold,    1), 'icon' => 'sold'],
-            ],
+            'period'           => ['from' => $from, 'to' => $to],
+            'farmers_supplied' => round($farmers, 1),
+            'sold'             => round($sold, 1),
+            'stations'         => $stations,
+            'stations_total'   => round($stations->sum('current_qty'), 1),
+            // Visible for reporting/follow-up — never included in
+            // farmers_supplied or stations_total, since rejected milk was
+            // never accepted into the business.
+            'rejected_qty'     => round((float) ($rejected->qty ?? 0), 1),
+            'rejected_count'   => (int) ($rejected->cnt ?? 0),
         ], 'Milk traceability loaded');
     }
 
     public function graderCollections(Request $request): JsonResponse
     {
-        $from = $request->get('date_from', now()->startOfMonth()->toDateString());
+        $from = $request->get('date_from', now()->toDateString());
         $to   = $request->get('date_to',   now()->toDateString());
 
         $rows = DB::table('milk_grader_collections as gc')
@@ -587,30 +617,64 @@ class SalesDashboardController extends Controller
     public function graderDetail(Request $request): JsonResponse
     {
         $graderCode = $request->get('grader_code', '');
-        $from       = $request->get('date_from', now()->startOfMonth()->toDateString());
+        $from       = $request->get('date_from', now()->toDateString());
         $to         = $request->get('date_to',   now()->toDateString());
 
         // ── Farmers collected for this grader ───────────────────────────────
-        $farmers = DB::table('milk_grader_collections as gc')
-            ->join('milk_purchases as mp',       'mp.id',  '=', 'gc.purchase_id')
-            ->join('milk_purchase_items as mpi', 'mpi.purchase_id', '=', 'mp.id')
-            ->leftJoin('farmers as f',           'f.id',   '=', 'mpi.farmer_id')
-            ->where('gc.location', $graderCode)
-            ->whereBetween('gc.date_collected', [$from, $to])
-            ->groupBy('f.id', 'f.farmer_no', 'f.full_name', 'f.phone')
-            ->selectRaw("
-                COALESCE(f.farmer_no,   'Unknown') AS farmer_no,
-                COALESCE(f.full_name,   'Unknown') AS farmer_name,
-                COALESCE(f.phone,       '')        AS phone,
-                SUM(mpi.quantity)                  AS total_qty,
-                SUM(mpi.total_price)               AS total_amount,
-                AVG(mpi.unit_price)                AS avg_rate,
-                COUNT(DISTINCT gc.date_collected)  AS sessions,
-                MAX(gc.date_collected)             AS last_collection
-            ")
-            ->orderByDesc('total_qty')
-            ->get();
-
+        // $farmers = DB::table('milk_grader_collections as gc')
+        //     ->join('milk_purchases as mp',       'mp.id',  '=', 'gc.purchase_id')
+        //     ->join('milk_purchase_items as mpi', 'mpi.purchase_id', '=', 'mp.id')
+        //     ->Join('farmers as f',           'f.id',   '=', 'mpi.farmer_id')
+        //     ->where('gc.location', $graderCode)
+        //     ->whereBetween('gc.date_collected', [$from, $to])
+        //     ->selectRaw("
+        //         COALESCE(f.farmer_no,   'Unknown') AS farmer_no,
+        //         COALESCE(f.full_name,   'Unknown') AS farmer_name,
+        //         COALESCE(f.phone,       '')        AS phone,
+        //         SUM(mpi.quantity)                  AS total_qty,
+        //         SUM(mpi.total_price)               AS total_amount,
+        //         AVG(mpi.unit_price)                AS avg_rate,
+        //         COUNT(DISTINCT gc.date_collected)  AS sessions,
+        //         MAX(gc.date_collected)             AS last_collection
+        //     ")
+        //     ->groupBy('gc.location', 'mpi.farmer_id','gc.date_collected')
+        //     ->orderByDesc('total_qty')
+        //     ->get();
+        $farmers = DB::table(function ($query) {
+        $query->from('milk_purchase_items')
+            ->select('purchase_id', 'farmer_id')
+            ->selectRaw('SUM(quantity)    AS total_qty')
+            ->selectRaw('SUM(total_price) AS total_amount')
+            ->selectRaw('AVG(unit_price)  AS avg_rate')
+            ->groupBy('purchase_id', 'farmer_id');
+    }, 'mpi_agg')
+    ->join('milk_purchases as mp', 'mp.id', '=', 'mpi_agg.purchase_id')
+    ->join('milk_grader_collections as gc', 'gc.purchase_id', '=', 'mp.id')
+    ->join('farmers as f', 'f.id', '=', 'mpi_agg.farmer_id')
+    ->where('gc.location', $graderCode)
+    ->whereBetween('gc.date_collected', [$from, $to])
+    ->selectRaw("
+        COALESCE(f.farmer_no, 'Unknown') AS farmer_no,
+        COALESCE(f.full_name, 'Unknown') AS farmer_name,
+        COALESCE(f.phone, '')            AS phone,
+        mpi_agg.total_qty,
+        mpi_agg.total_amount,
+        mpi_agg.avg_rate,
+        COUNT(DISTINCT gc.date_collected) AS sessions,
+        MAX(gc.date_collected)            AS last_collection
+    ")
+    ->groupBy(
+        'mpi_agg.farmer_id',
+        'f.farmer_no',
+        'f.full_name',
+        'f.phone',
+        'mpi_agg.total_qty',
+        'mpi_agg.total_amount',
+        'mpi_agg.avg_rate'
+    )
+    ->orderByDesc('total_qty')
+    ->get();
+        // echo json_encode($farmers);
         $grandQty = $farmers->sum('total_qty');
 
         $farmers = $farmers->map(fn($r) => [

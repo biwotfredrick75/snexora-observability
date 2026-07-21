@@ -10,9 +10,12 @@ class AppModuleConfig extends Model
     protected $keyType    = 'string';
     public    $incrementing = false;
 
-    protected $fillable = ['module_id', 'label', 'description', 'is_enabled'];
+    protected $fillable = ['module_id', 'label', 'description', 'is_enabled', 'roles'];
 
-    protected $casts = ['is_enabled' => 'boolean'];
+    protected $casts = [
+        'is_enabled' => 'boolean',
+        'roles'      => 'array',
+    ];
 
     // Canonical module list — mirrors module_registry.dart in the mobile app
     public static array $definitions = [

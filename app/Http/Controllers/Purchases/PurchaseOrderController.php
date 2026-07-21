@@ -459,8 +459,11 @@ class PurchaseOrderController extends Controller
         $locCode   = $po->receive_into ?: $po->location_id;
         $tranDate  = $po->delivery_date ?? $po->order_date ?? now()->toDateString();
         $glSetting = GlSetting::first();
-        $apAccount = $glSetting?->supplier_payable_account ?: '201010';
-        $grnClearing = $glSetting?->grn_clearing_account ?: 'GRN-CLEARING';
+        // supplier_payable_account was never a real gl_settings column (see
+        // memory/reconciliation note) — payable_account is the actual AP
+        // control account every other module posts supplier payables to.
+        $apAccount = $glSetting?->payable_account ?: '202012';
+        $grnClearing = $glSetting?->grn_clearing_account ?: '103036';
         $glType    = 25; // direct supplier invoice
 
         foreach ($po->items as $idx => $item) {

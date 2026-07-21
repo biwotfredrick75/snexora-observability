@@ -17,8 +17,16 @@ class EtimsService
 
     public function __construct()
     {
-        $this->gatewayUrl = rtrim(config('etims.gateway_url', 'http://localhost:8080'), '/');
-        $this->apiKey     = config('etims.api_key', 'your-secret-key-here');
+        // Company Preferences (set via Setup > eTIMS) takes priority over the
+        // static .env/config default — same resolution order as
+        // EtimsController/EtimsSetupController, which this class must match.
+        // Without this, stamping silently bypassed the etims-gateway service
+        // entirely and hit whatever else happened to be on the config default
+        // port instead.
+        $prefs = DB::table('company_preferences')->first();
+
+        $this->gatewayUrl = rtrim($prefs?->etims_gateway_url ?: config('etims.gateway_url', 'http://localhost:8080'), '/');
+        $this->apiKey     = $prefs?->etims_api_key ?: config('etims.api_key', 'your-secret-key-here');
     }
 
     // ── Public entry points ───────────────────────────────────────────────────
@@ -247,22 +255,40 @@ class EtimsService
             'etims_rcpt_date'  => $data['VSCURcptPbctDate']  ?? null,
             'etims_stamped_at' => $isSuccess ? now() : null,
             'etims_error'      => !$isSuccess ? ($response['resultMsg'] ?? null) : null,
+            // Cleared by default — only set below when a real QR is (re)generated.
+            // A re-stamp attempt that no longer qualifies (or never did) must not
+            // leave a stale path from a prior attempt pointing at nothing.
+            'etims_qr_path'    => null,
         ];
 
-        // Generate QR code
-        if ($isSuccess) {
-            $qrData = !empty($data['intrIData'])
-                ? $data['intrIData']
-                : implode('|', array_filter([
-                    $data['mrcNo']    ?? null,
-                    $model->inv_no    ?? ($model->cn_no ?? null),
-                    now()->format('YmdHis'),
-                ]));
-
-            $update['etims_qr_path'] = $this->generateQr($qrData, $type, $model->id);
+        // A "receipt" QR code is only meaningful once KRA has actually returned
+        // signed data (intrIData) — that's the cryptographic token the code
+        // must carry. An invoice that's merely "signed" locally by the VSCU
+        // but not yet transmitted has no real signature to encode, so no QR
+        // is generated for it (a placeholder/debug string here would look
+        // scannable but resolve to nothing on KRA's verification page).
+        if ($isSuccess && !empty($data['intrIData'])) {
+            $update['etims_qr_path'] = $this->generateQr(
+                $this->receiptVerifyUrl($data['intrIData']), $type, $model->id
+            );
         }
 
         $model->update($update);
+    }
+
+    /**
+     * KRA's standard eTIMS receipt-verification link — scanning it opens
+     * KRA's own portal, which looks up and displays the invoice (buyer/seller
+     * PINs, tax breakdown, items) against the signed `Data` token. The QR
+     * itself only needs to carry this URL, not a copy of the invoice fields.
+     */
+    private function receiptVerifyUrl(string $intrIData): string
+    {
+        $host = config('etims.env') === 'prod'
+            ? 'https://etims.kra.go.ke'
+            : 'https://etims-sbx.kra.go.ke';
+
+        return "{$host}/common/link/etims/receipt/indexEtimsReceiptData?Data=" . urlencode($intrIData);
     }
 
     private function generateQr(string $data, string $type, int $id): ?string

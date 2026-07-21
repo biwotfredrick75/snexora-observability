@@ -64,6 +64,8 @@ class FarmerController extends Controller
             'member_no'            => 'nullable|string|max:50',
             'related_member_nos'   => 'nullable|string|max:500',
             'director_name'        => 'nullable|string|max:200',
+            'latitude'             => 'nullable|numeric|between:-90,90',
+            'longitude'            => 'nullable|numeric|between:-180,180',
         ]);
 
         $data['farmer_no'] = $this->generateFarmerNo();
@@ -113,6 +115,8 @@ class FarmerController extends Controller
             'member_no'            => 'nullable|string|max:50',
             'related_member_nos'   => 'nullable|string|max:500',
             'director_name'        => 'nullable|string|max:200',
+            'latitude'             => 'nullable|numeric|between:-90,90',
+            'longitude'            => 'nullable|numeric|between:-180,180',
         ]);
         $farmer->fill($data)->save();
         return ApiResponse::updated($farmer->fresh()->load(['bank', 'route']), 'Farmer updated');
@@ -157,6 +161,22 @@ class FarmerController extends Controller
         $farmers = $query->limit(30)->get(['id', 'farmer_no', 'full_name', 'member_no']);
 
         return ApiResponse::success($farmers, 'Farmers search results');
+    }
+
+    /**
+     * Lightweight list for map plotting — only farmers with coordinates set
+     * (most won't, since this is opt-in), capped so a 20k+ farmer base can't
+     * blow up the map/response.
+     */
+    public function mapLocations(): JsonResponse
+    {
+        $farmers = Farmer::whereNotNull('latitude')
+            ->whereNotNull('longitude')
+            ->orderBy('full_name')
+            ->limit(2000)
+            ->get(['id', 'farmer_no', 'full_name', 'status', 'latitude', 'longitude']);
+
+        return ApiResponse::success($farmers, 'Farmer locations retrieved');
     }
 
     public function formData(): JsonResponse

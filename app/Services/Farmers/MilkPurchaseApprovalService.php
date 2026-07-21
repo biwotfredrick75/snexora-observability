@@ -4,6 +4,7 @@ namespace App\Services\Farmers;
 
 use App\Models\MilkPurchase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 /**
@@ -71,8 +72,26 @@ class MilkPurchaseApprovalService
             ->where('code', $locCode)
             ->value('price_list') ?? '';
 
+        $hasPurchDataTable = Schema::hasTable('milk_purch_data');
+
         // ── 4. Per-farmer-item loop ───────────────────────────────────────────
         foreach ($purchase->items as $item) {
+            // Rejected milk (failed QC at collection) is recorded for
+            // reporting/farmer follow-up only — it was never received into
+            // inventory and is never paid for, so it must not touch stock,
+            // GRN, purchase orders, payables, or the GL in any way.
+            //
+            // This does NOT affect the grader/transporter's payroll either —
+            // a farmer's milk failing QC at the point of collection is the
+            // farmer's outcome, not the grader's, so no deduction is raised
+            // against them for it. Only milk that was good at collection but
+            // is later lost/rejected during transport counts against the
+            // grader — see MilkTransferReceptionController, which charges
+            // that via GraderDeduction at farmer rate.
+            if ($item->quality_status === 'rejected') {
+                continue;
+            }
+
             $farmer = DB::table('farmers')->where('id', $item->farmer_id)->first();
             if (! $farmer) {
                 continue;
@@ -108,8 +127,16 @@ class MilkPurchaseApprovalService
 
             // ── STEP 2: purch_data — supplier price record ───────────────────
             // supplier_id+stock_id is a composite PK — only insert when supplier is linked.
-            if ($supplierId) {
-                DB::table('purch_data')->insertOrIgnore([
+            // The table this originally targeted (milk_purch_data) was dropped by
+            // 2026_03_19_110008_replace_milk_purch_tables_with_shared.php in favour
+            // of a "shared" purch_data table that was never actually migrated —
+            // neither exists today, and nothing in the app reads this data back
+            // (it's insertOrIgnore, write-only). Guard on the table's existence so
+            // approval isn't blocked by this dead write; resurrect the migration
+            // if this data turns out to be needed later.
+            if ($supplierId && $hasPurchDataTable) {
+                DB::table('milk_purch_data')->insertOrIgnore([
+                    'purchase_item_id'    => $item->id,
                     'supplier_id'         => $supplierId,
                     'stock_id'            => $rawMilkItem->stock_id,
                     'price'               => $unitPrice,

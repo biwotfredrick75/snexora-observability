@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class MilkPurchase extends Model
 {
     protected $fillable = [
-        'seq', 'grader_id', 'route_id', 'shift_id', 'pricing_type', 'reference_no',
+        'seq', 'grader_id', 'route_id', 'shift_id', 'pricing_type', 'source', 'reference_no',
         'invoice_date', 'due_date', 'total_qty', 'total_amount', 'status',
         'created_by', 'approved_by', 'reject_reason',
     ];

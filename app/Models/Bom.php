@@ -12,11 +12,13 @@ class Bom extends Model
 
     protected $fillable = [
         'bom_no', 'product_code', 'description', 'version',
-        'standard_batch_qty', 'batch_unit', 'mfg_type_id', 'is_active', 'created_by',
+        'standard_batch_qty', 'batch_unit', 'scrap_pct', 'target_margin_pct', 'mfg_type_id', 'is_active', 'created_by',
     ];
 
     protected $casts = [
         'standard_batch_qty' => 'float',
+        'scrap_pct'          => 'float',
+        'target_margin_pct'  => 'float',
         'is_active'          => 'boolean',
     ];
 

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
 use App\Http\Requests\Auth\RegisterRequest;
 use App\Http\Responses\ApiResponse;
+use App\Models\ActivityLog;
 use App\Services\Auth\AuthService;
 use Illuminate\Http\JsonResponse;
 
@@ -34,10 +35,13 @@ class AuthController extends Controller
         );
 
         if (!$user) {
+            ActivityLog::record('login_failed', "Failed login attempt for {$request->validated('email')}");
             return ApiResponse::unauthorized('Invalid credentials or account is inactive.');
         }
 
         $token = $user->createToken('API Token')->accessToken;
+
+        ActivityLog::record('login', "{$user->real_name} logged in", actor: $user);
 
         return ApiResponse::success([
             'user' => [
@@ -80,6 +84,7 @@ class AuthController extends Controller
         if ($user) {
             // Revoke all tokens for the user
             $user->tokens()->update(['revoked' => true]);
+            ActivityLog::record('logout', "{$user->real_name} logged out", actor: $user);
         }
 
         return ApiResponse::deleted('Logged out successfully');

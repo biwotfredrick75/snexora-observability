@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Setup;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\ActivityLog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Spatie\Permission\Models\Permission;
@@ -57,6 +58,8 @@ class RoleController extends Controller
             'guard_name' => 'api',
         ]);
 
+        ActivityLog::record('created', "Created role {$role->name}", $role);
+
         return ApiResponse::created(
             ['name' => $role->name, 'permissions' => []],
             'Role created successfully'
@@ -72,11 +75,15 @@ class RoleController extends Controller
         $role = Role::findByName($name, 'api');
         if (!$role) return ApiResponse::notFound('Role not found');
 
+        $before = $role->permissions->pluck('name')->toArray();
         $permissions = $request->input('permissions', []);
         $role->syncPermissions($permissions);
 
         // Flush Spatie permission cache
         app()['cache']->forget('spatie.permission.cache');
+
+        ActivityLog::record('updated', "Updated permissions for role {$role->name}", $role,
+            old: ['permissions' => $before], new: ['permissions' => $permissions]);
 
         return ApiResponse::success(
             [
@@ -96,6 +103,7 @@ class RoleController extends Controller
         $role = Role::findByName($name, 'api');
         if (!$role) return ApiResponse::notFound('Role not found');
 
+        ActivityLog::record('deleted', "Deleted role {$role->name}", $role);
         $role->delete();
 
         return ApiResponse::deleted('Role deleted successfully');

@@ -131,6 +131,7 @@ class FarmerPaymentController extends Controller
         $advancesMap = DB::table('farmer_payments')
             ->whereIn('farmer_id', $farmerIds)
             ->where('type', 'advance')
+            ->where('recovered', false)
             ->whereBetween('date_paid', [$startDate, $endDate])
             ->selectRaw('farmer_id, SUM(amount_payment) AS advance_total')
             ->groupBy('farmer_id')
@@ -140,6 +141,7 @@ class FarmerPaymentController extends Controller
         $invoicesMap = DB::table('farmer_direct_invoices')
             ->whereIn('farmer_id', $farmerIds)
             ->where('status', 'placed')
+            ->where('settled', false)
             ->whereBetween('invoice_date', [$startDate, $endDate])
             ->selectRaw('farmer_id, SUM(amount_total) AS invoice_total')
             ->groupBy('farmer_id')
@@ -164,12 +166,37 @@ class FarmerPaymentController extends Controller
             ->where('to_year', $year)
             ->pluck('amount', 'farmer_id');
 
+        // ── Regular Sales module invoices against a customer linked to this
+        // farmer (customers.farmer_no) — a second "sales to farmers" channel
+        // separate from farmer_direct_invoices above (e.g. a farmer buying at
+        // a company shop/POS as a normal customer). Joined against
+        // farmers.farmer_no rather than just checking customers.farmer_no is
+        // non-null, since a handful of customer records carry a farmer_no-
+        // shaped value that doesn't actually match any real farmer.
+        // Outstanding = amount_total minus whatever is already allocated via
+        // debtor_allocations — status stays 'placed' even once fully
+        // allocated (same as CustomerPaymentController), so without this an
+        // already-settled invoice would still show as a pending deduction.
+        $salesInvoiceMap = DB::table('sales_invoices as si')
+            ->join('customers as c', 'c.debtor_no', '=', 'si.debtor_no')
+            ->join('farmers as f2', 'f2.farmer_no', '=', 'c.farmer_no')
+            ->leftJoin('debtor_allocations as da', 'da.inv_id', '=', 'si.id')
+            ->whereIn('f2.id', $farmerIds)
+            ->where('si.status', 'placed')
+            ->whereBetween('si.invoice_date', [$startDate, $endDate])
+            ->groupBy('f2.id', 'si.id', 'si.amount_total')
+            ->selectRaw('f2.id AS farmer_id, si.amount_total - COALESCE(SUM(da.amount), 0) AS outstanding')
+            ->get()
+            ->groupBy('farmer_id')
+            ->map(fn ($rows) => $rows->sum(fn ($r) => max(0, (float) $r->outstanding)));
+
         // ── Checkoff entries for these farmers for the period ─────────────────
         $checkoffRows = DB::table('farmer_checkoff_entries as fce')
             ->leftJoin('checkoff_services as cs', 'cs.id', '=', 'fce.service_id')
             ->whereIn('fce.farmer_id', $farmerIds)
             ->where('fce.month', $month)
             ->where('fce.year',  $year)
+            ->where('fce.deducted', false)
             ->selectRaw('
                 fce.farmer_id,
                 COALESCE(cs.service_name, fce.service_name) AS service_name,
@@ -197,7 +224,7 @@ class FarmerPaymentController extends Controller
 
         // ── Combine milk + advances + deductions + invoices + ESP + carry-forward ─
         $farmers = $milkRows->map(function ($row) use (
-            $services, $deductionMap, $advancesMap, $invoicesMap, $espMap, $carryForwardMap
+            $services, $deductionMap, $advancesMap, $invoicesMap, $espMap, $carryForwardMap, $salesInvoiceMap
         ) {
             $fid           = $row->farmer_id;
             $gross         = (float) $row->gross_amount;
@@ -205,6 +232,7 @@ class FarmerPaymentController extends Controller
             $invoiceAmount = (float) ($invoicesMap[$fid] ?? 0);
             $espAmount     = (float) ($espMap[$fid] ?? 0);
             $carryForward  = (float) ($carryForwardMap[$fid] ?? 0);
+            $salesInvAmount= (float) ($salesInvoiceMap[$fid] ?? 0);
             $totalDeduct   = 0.0;
             $deductions    = [];
 
@@ -218,7 +246,7 @@ class FarmerPaymentController extends Controller
                 $totalDeduct += $amount;
             }
 
-            $net     = $gross - $advanceAmount - $totalDeduct - $invoiceAmount - $espAmount - $carryForward;
+            $net     = $gross - $advanceAmount - $totalDeduct - $invoiceAmount - $espAmount - $carryForward - $salesInvAmount;
             $deficit = $net < 0 ? round(abs($net), 4) : 0;
             $net     = max(0, $net);
 
@@ -243,6 +271,7 @@ class FarmerPaymentController extends Controller
                     : 0,
                 'advance_amount'       => round($advanceAmount, 2),
                 'invoice_amount'       => round($invoiceAmount, 2),
+                'sales_invoice_amount' => round($salesInvAmount, 2),
                 'esp_amount'           => round($espAmount, 2),
                 'carry_forward'        => round($carryForward, 2),
                 'deductions'           => $deductions,
@@ -259,6 +288,7 @@ class FarmerPaymentController extends Controller
             'gross_amount'      => round($farmers->sum('gross_amount'), 4),
             'total_advances'    => round($farmers->sum('advance_amount'), 2),
             'total_invoices'    => round($farmers->sum('invoice_amount'), 2),
+            'total_sales_invoices' => round($farmers->sum('sales_invoice_amount'), 2),
             'total_esp'         => round($farmers->sum('esp_amount'), 2),
             'total_carry_fwd'   => round($farmers->sum('carry_forward'), 2),
             'total_deductions'  => round($farmers->sum('total_deductions'), 4),
@@ -333,6 +363,7 @@ class FarmerPaymentController extends Controller
             'gross_amount'     => 0,
             'total_advances'   => 0,
             'total_invoices'   => 0,
+            'total_sales_invoices' => 0,
             'total_carry_fwd'  => 0,
             'total_deductions' => 0,
             'net_payment'      => 0,

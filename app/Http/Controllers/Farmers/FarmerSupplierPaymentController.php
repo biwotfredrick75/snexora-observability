@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Farmers;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\FarmerPayment;
@@ -11,6 +12,11 @@ use Illuminate\Support\Facades\DB;
 
 class FarmerSupplierPaymentController extends Controller
 {
+    // Matches App\Jobs\ProcessFarmerPaymentsBatch::GL_TYPE_FARMER_PAYMENT —
+    // gld_transactions.trans_no is scoped per-type, so both entry points
+    // (this controller and the batch job) must agree on the type code.
+    private const GL_TYPE_FARMER_PAYMENT = 50;
+
     public function formData(Request $request): JsonResponse
     {
         $search = $request->input('search', '');
@@ -144,19 +150,35 @@ class FarmerSupplierPaymentController extends Controller
         $data['created_by'] = $request->user()?->real_name ?? $request->user()?->user_id ?? 'system';
 
         $payment = DB::transaction(function () use ($data, $request) {
-            $payment = FarmerPayment::create($data);
+            // trans_no is int unsigned, scoped per type — next sequential
+            // number among existing farmer-payment GL rows (locked to avoid
+            // a race with concurrent payments). Computed before the payment
+            // row exists so it can be stored on that row for later lookup
+            // (e.g. reopening the GL voucher from a payments list).
+            $transNo = (DB::table('gld_transactions')
+                ->where('type', self::GL_TYPE_FARMER_PAYMENT)
+                ->lockForUpdate()
+                ->max('trans_no') ?? 0) + 1;
+
+            $payment = FarmerPayment::create($data + [
+                'gl_trans_no' => $transNo,
+                'gl_type'     => self::GL_TYPE_FARMER_PAYMENT,
+            ]);
 
             // ── Post to GL ────────────────────────────────────────────────────
             $glSettings  = DB::table('gl_settings')->first();
-            $transNo     = 'FP-' . $payment->id;
+            $displayRef  = 'FP-' . $payment->id;
             $createdBy   = $request->user()?->user_id ?? 'system';
             $amount      = (float) $data['amount_payment'];
             $bankCharge  = (float) ($data['bank_charge'] ?? 0);
             $bankCode    = $data['from_account'] ?? ($glSettings->farmers_bank_account ?? '');
             $payableCode = $glSettings->farmers_payable_account ?? '';
             $chargeCode  = $glSettings->bank_charges_account    ?? '';
+            $farmer      = DB::table('farmers')->where('id', $data['farmer_id'])->first(['full_name', 'member_no']);
+            $farmerTag   = trim(($farmer->full_name ?? '') . ' (' . ($farmer->member_no ?? '') . ')');
             $narration   = trim(
                 ($data['type'] === 'advance' ? 'Farmer advance' : 'Farmer payment')
+                . ' | ' . $farmerTag
                 . ($data['reference'] ? ' — ' . $data['reference'] : '')
                 . ($data['memo'] ? ' | ' . $data['memo'] : '')
             );
@@ -167,10 +189,10 @@ class FarmerSupplierPaymentController extends Controller
             if ($payableCode) {
                 $glRows[] = [
                     'trans_no'    => $transNo,
-                    'type'        => 'farmer_payment',
+                    'type'        => self::GL_TYPE_FARMER_PAYMENT,
                     'tran_date'   => $data['date_paid'],
                     'account_code'=> $payableCode,
-                    'reference'   => $data['reference'] ?? $transNo,
+                    'reference'   => $data['reference'] ?? $displayRef,
                     'narration'   => $narration,
                     'amount'      => $amount,        // positive = debit
                     'created_by'  => $createdBy,
@@ -183,10 +205,10 @@ class FarmerSupplierPaymentController extends Controller
             if ($bankCode) {
                 $glRows[] = [
                     'trans_no'    => $transNo,
-                    'type'        => 'farmer_payment',
+                    'type'        => self::GL_TYPE_FARMER_PAYMENT,
                     'tran_date'   => $data['date_paid'],
                     'account_code'=> $bankCode,
-                    'reference'   => $data['reference'] ?? $transNo,
+                    'reference'   => $data['reference'] ?? $displayRef,
                     'narration'   => $narration,
                     'amount'      => -($amount + $bankCharge), // negative = credit
                     'created_by'  => $createdBy,
@@ -199,10 +221,10 @@ class FarmerSupplierPaymentController extends Controller
             if ($bankCharge > 0 && $chargeCode) {
                 $glRows[] = [
                     'trans_no'    => $transNo,
-                    'type'        => 'farmer_payment',
+                    'type'        => self::GL_TYPE_FARMER_PAYMENT,
                     'tran_date'   => $data['date_paid'],
                     'account_code'=> $chargeCode,
-                    'reference'   => $data['reference'] ?? $transNo,
+                    'reference'   => $data['reference'] ?? $displayRef,
                     'narration'   => 'Bank charge — ' . $narration,
                     'amount'      => $bankCharge,    // positive = debit
                     'created_by'  => $createdBy,
@@ -217,6 +239,15 @@ class FarmerSupplierPaymentController extends Controller
 
             return $payment;
         });
+
+        try {
+            broadcast(new DashboardEvent('payments', 'farmer_payment_posted', [
+                'farmer_id' => $payment->farmer_id,
+                'amount'    => $payment->amount_payment,
+            ]));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+        }
 
         return ApiResponse::created(
             $payment->load('farmer'),

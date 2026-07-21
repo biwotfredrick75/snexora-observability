@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Banking;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -137,6 +138,12 @@ class BankTransactionController extends Controller
 
             DB::table('gld_transactions')->insert($glLines);
 
+            try {
+                broadcast(new DashboardEvent('gl', 'bank_payment_posted', ['pay_no' => $payNo, 'amount' => $total]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
+
             return ApiResponse::created(['id' => $payment, 'pay_no' => $payNo, 'amount' => $total], 'Payment posted');
         });
     }
@@ -237,6 +244,12 @@ class BankTransactionController extends Controller
 
             DB::table('gld_transactions')->insert($glLines);
 
+            try {
+                broadcast(new DashboardEvent('gl', 'bank_deposit_posted', ['dep_no' => $depNo, 'amount' => $total]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
+
             return ApiResponse::created(['id' => $deposit, 'dep_no' => $depNo, 'amount' => $total], 'Deposit posted');
         });
     }
@@ -318,6 +331,12 @@ class BankTransactionController extends Controller
             }
 
             DB::table('gld_transactions')->insert($glLines);
+
+            try {
+                broadcast(new DashboardEvent('gl', 'bank_transfer_posted', ['transfer_no' => $transferNo, 'amount' => $amount]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
 
             return ApiResponse::created(['id' => $transfer, 'transfer_no' => $transferNo], 'Transfer posted');
         });

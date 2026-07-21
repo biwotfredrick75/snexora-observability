@@ -15,6 +15,7 @@ use App\Models\SalesInvoiceItem;
 use App\Models\StockMovement;
 use App\Services\Etims\EtimsService;
 use App\Services\Inventory\StockMovementService;
+use App\Services\Payments\PaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use App\Traits\ValidatesSellingPrice;
@@ -73,6 +74,13 @@ class SalesInvoiceController extends Controller
         if ($v = $request->get('date_to'))     $query->where('invoice_date', '<=', $v);
         if ($v = $request->get('status'))      $query->where('status', $v);
 
+        // Graders only see their own invoices — same created_by scoping as
+        // MilkPurchaseController::index(). Office/web users (no grader role)
+        // keep the unscoped, all-invoices view.
+        if (auth()->user()?->hasRole('grader')) {
+            $query->where('created_by', auth()->user()->user_id);
+        }
+
         $invoices = $query->paginate(min((int) $request->get('per_page', 20), 100));
 
         // Append outstanding_balance to each invoice
@@ -119,65 +127,88 @@ class SalesInvoiceController extends Controller
             'items.*.standard_cost'=> 'nullable|numeric|min:0',
         ]);
 
-        return DB::transaction(function () use ($validated) {
-            $invoice = SalesInvoice::create([
-                'inv_no'             => 'TEMP-' . uniqid(),
-                'so_id'              => $validated['so_id'] ?? null,
-                'dn_id'              => $validated['dn_id'] ?? null,
-                'debtor_no'          => $validated['debtor_no'],
-                'branch_id'          => $validated['branch_id'] ?? null,
-                'invoice_date'       => $validated['invoice_date'],
-                'due_date'           => $validated['due_date'] ?? null,
-                'payment_terms'      => $validated['payment_terms'] ?? null,
-                'price_list_id'      => $validated['price_list_id'] ?? null,
-                'shipping_charge'    => $validated['shipping_charge'] ?? 0,
-                'dimension_id'       => $validated['dimension_id'] ?? null,
-                'dimension2_id'      => $validated['dimension2_id'] ?? null,
-                'location_id'        => $validated['location_id'] ?? null,
-                'vehicle'            => $validated['vehicle'] ?? null,
-                'shift'              => $validated['shift'] ?? null,
-                'deliver_to'         => $validated['deliver_to'] ?? null,
-                'address'            => $validated['address'] ?? null,
-                'contact_phone'      => $validated['contact_phone'] ?? null,
-                'customer_ref'       => $validated['customer_ref'] ?? null,
-                'comments'           => $validated['comments'] ?? null,
-                'payment_provider'      => $validated['payment_provider'] ?? null,
-                'payment_channel_code'  => $validated['payment_channel_code'] ?? null,
-                'shipping_company_id'=> $validated['shipping_company_id'] ?? null,
-                'status'             => 'draft',
-                'created_by'         => auth()->user()?->user_id ?? 'system',
-            ]);
+        // Create and place in one atomic transaction — an invoice must never
+        // persist as 'draft': either everything below succeeds and it's
+        // committed already-placed (stock moved, GL posted), or any guard
+        // failure inside placeInvoiceTx() throws, the whole transaction
+        // (including the invoice/items rows created here) rolls back, and
+        // nothing is left behind for the user to retry into a duplicate.
+        // (Previously this only created the draft row; the app made a
+        // separate POST .../place call afterwards — if that second call
+        // failed, e.g. on a missing buying price, the draft was permanently
+        // stranded with no delete/retry path, which is exactly how orphaned
+        // Draft invoices piled up.)
+        $company     = DB::table('company_preferences')->first();
+        $glSetting   = DB::table('gl_settings')->first();
+        $shortfalls  = [];
+        $missingCost = [];
 
-            $invoice->update(['inv_no' => SalesInvoice::nextInvNo()]);
-
-            $subTotal = 0;
-            foreach ($validated['items'] as $itemData) {
-                $lineTotal = $this->calcLineTotal($itemData);
-                $subTotal += $lineTotal;
-                SalesInvoiceItem::create([
-                    'inv_id'        => $invoice->id,
-                    'stock_id'      => $itemData['stock_id'],
-                    'description'   => $itemData['description'],
-                    'qty'           => $itemData['qty'],
-                    'unit'          => $itemData['unit'] ?? null,
-                    'price'         => $itemData['price'],
-                    'standard_cost' => $itemData['standard_cost'] ?? 0,
-                    'discount_pct'  => $itemData['discount_pct'] ?? 0,
-                    'line_total'    => $lineTotal,
+        try {
+            $placed = DB::transaction(function () use ($validated, $company, $glSetting, &$shortfalls, &$missingCost) {
+                $invoice = SalesInvoice::create([
+                    'inv_no'             => 'TEMP-' . uniqid(),
+                    'so_id'              => $validated['so_id'] ?? null,
+                    'dn_id'              => $validated['dn_id'] ?? null,
+                    'debtor_no'          => $validated['debtor_no'],
+                    'branch_id'          => $validated['branch_id'] ?? null,
+                    'invoice_date'       => $validated['invoice_date'],
+                    'due_date'           => $validated['due_date'] ?? null,
+                    'payment_terms'      => $validated['payment_terms'] ?? null,
+                    'price_list_id'      => $validated['price_list_id'] ?? null,
+                    'shipping_charge'    => $validated['shipping_charge'] ?? 0,
+                    'dimension_id'       => $validated['dimension_id'] ?? null,
+                    'dimension2_id'      => $validated['dimension2_id'] ?? null,
+                    'location_id'        => $validated['location_id'] ?? null,
+                    'vehicle'            => $validated['vehicle'] ?? null,
+                    'shift'              => $validated['shift'] ?? null,
+                    'deliver_to'         => $validated['deliver_to'] ?? null,
+                    'address'            => $validated['address'] ?? null,
+                    'contact_phone'      => $validated['contact_phone'] ?? null,
+                    'customer_ref'       => $validated['customer_ref'] ?? null,
+                    'comments'           => $validated['comments'] ?? null,
+                    'payment_provider'      => $validated['payment_provider'] ?? null,
+                    'payment_channel_code'  => $validated['payment_channel_code'] ?? null,
+                    'shipping_company_id'=> $validated['shipping_company_id'] ?? null,
+                    'status'             => 'draft',
+                    'created_by'         => auth()->user()?->user_id ?? 'system',
                 ]);
-            }
 
-            $invoice->sub_total    = round($subTotal, 2);
-            $invoice->amount_total = round($subTotal + ($validated['shipping_charge'] ?? 0), 2);
-            $invoice->save();
+                $invoice->update(['inv_no' => SalesInvoice::nextInvNo()]);
 
-            try {
-                broadcast(new DashboardEvent('sales', 'invoice_created'));
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
-            }
-            return ApiResponse::created($invoice->load('items'), 'Sales invoice created');
-        });
+                $subTotal = 0;
+                foreach ($validated['items'] as $itemData) {
+                    $lineTotal = $this->calcLineTotal($itemData);
+                    $subTotal += $lineTotal;
+                    SalesInvoiceItem::create([
+                        'inv_id'        => $invoice->id,
+                        'stock_id'      => $itemData['stock_id'],
+                        'description'   => $itemData['description'],
+                        'qty'           => $itemData['qty'],
+                        'unit'          => $itemData['unit'] ?? null,
+                        'price'         => $itemData['price'],
+                        'standard_cost' => $itemData['standard_cost'] ?? 0,
+                        'discount_pct'  => $itemData['discount_pct'] ?? 0,
+                        'line_total'    => $lineTotal,
+                    ]);
+                }
+
+                $invoice->sub_total    = round($subTotal, 2);
+                $invoice->amount_total = round($subTotal + ($validated['shipping_charge'] ?? 0), 2);
+                $invoice->save();
+
+                try {
+                    broadcast(new DashboardEvent('sales', 'invoice_created'));
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+                }
+
+                return $this->placeInvoiceTx($invoice->fresh('items'), $company, $glSetting, $shortfalls, $missingCost);
+            });
+        } catch (\RuntimeException $e) {
+            return $this->guardFailureResponse($e, $shortfalls, $missingCost);
+        }
+
+        return $this->finalizePlacedResponse($placed, 'Sales invoice created and placed');
     }
    function checkCreditNoteItems($inv_id){
       return DB::table('credit_note_items as cni')
@@ -353,6 +384,12 @@ public function showCredit(int $id): JsonResponse
         return ApiResponse::updated($invoice->load('items'), 'Sales invoice updated');
     }
 
+    /**
+     * Legacy two-step endpoint — still used to retry/resume a genuinely
+     * stranded draft (e.g. one created before this atomic-store change
+     * shipped). New invoice creation (store() above) no longer relies on
+     * this: it calls placeInvoiceTx() directly inside its own transaction.
+     */
     public function place(int $id): JsonResponse
     {
         $invoice = SalesInvoice::with('items')->find($id);
@@ -370,7 +407,31 @@ public function showCredit(int $id): JsonResponse
         $missingCost = [];
 
         try {
+            // Deliberately not an arrow fn (fn () => ...): those capture
+            // $shortfalls/$missingCost by value, so placeInvoiceTx()'s
+            // reference params would populate a copy instead of these
+            // variables — guardFailureResponse() below would then always
+            // see empty arrays regardless of what actually failed.
             $placed = DB::transaction(function () use ($invoice, $company, $glSetting, &$shortfalls, &$missingCost) {
+                return $this->placeInvoiceTx($invoice, $company, $glSetting, $shortfalls, $missingCost);
+            });
+        } catch (\RuntimeException $e) {
+            return $this->guardFailureResponse($e, $shortfalls, $missingCost);
+        }
+
+        return $this->finalizePlacedResponse($placed, 'Sales invoice placed');
+    }
+
+    /**
+     * Runs every guard check + GL/stock posting needed to turn a draft
+     * invoice into a placed one, and flips its status — all within whatever
+     * transaction the caller is already in. Throws \RuntimeException
+     * ('missing_buying_price' | 'insufficient_stock') on a failed guard;
+     * the caller's transaction rolls back automatically since the exception
+     * propagates out uncaught.
+     */
+    private function placeInvoiceTx(SalesInvoice $invoice, $company, $glSetting, array &$shortfalls, array &$missingCost): SalesInvoice
+    {
             // Resolve stock location code for movements; fall back to first active location
             $locCode = $invoice->location_id
                 ? DB::table('inventory_locations')->where('id', $invoice->location_id)->value('code')
@@ -654,33 +715,39 @@ public function showCredit(int $id): JsonResponse
             $alloc->applyUnallocatedCreditNotes($freshInvoice, $tranDate, $createdBy);
 
             try {
-                broadcast(new DashboardEvent('order_entry', 'placed', ['inv_no' => $invoice->inv_no, 'amount' => $invoice->amount_total]));
+                broadcast(new DashboardEvent('sales', 'placed', ['inv_no' => $invoice->inv_no, 'amount' => $invoice->amount_total]));
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
             }
             return $invoice->fresh();
-            });
-        } catch (\RuntimeException $e) {
-            if ($e->getMessage() === 'insufficient_stock') {
-                $lines = array_map(
-                    fn($s) => "{$s['stock_id']}: need {$s['required']}, have {$s['available']}",
-                    $shortfalls
-                );
-                return ApiResponse::error(
-                    'Insufficient stock at the selected location — ' . implode('; ', $lines),
-                    422
-                );
-            }
-            if ($e->getMessage() === 'missing_buying_price') {
-                return ApiResponse::error(
-                    'Cannot place invoice — missing buying price for: ' . implode(', ', $missingCost)
-                        . '. Set a purchase cost (or material/labour/overhead cost) for these items before selling them.',
-                    422
-                );
-            }
-            throw $e;
-        }
+    }
 
+    /** Builds the error response for a guard failure thrown by placeInvoiceTx(). */
+    private function guardFailureResponse(\RuntimeException $e, array $shortfalls, array $missingCost): JsonResponse
+    {
+        if ($e->getMessage() === 'insufficient_stock') {
+            $lines = array_map(
+                fn($s) => "{$s['stock_id']}: need {$s['required']}, have {$s['available']}",
+                $shortfalls
+            );
+            return ApiResponse::error(
+                'Insufficient stock at the selected location — ' . implode('; ', $lines),
+                422
+            );
+        }
+        if ($e->getMessage() === 'missing_buying_price') {
+            return ApiResponse::error(
+                'Cannot place invoice — missing buying price for: ' . implode(', ', $missingCost)
+                    . '. Set a purchase cost (or material/labour/overhead cost) for these items before selling them.',
+                422
+            );
+        }
+        throw $e;
+    }
+
+    /** eTIMS stamping + auto payment-initiation once an invoice is placed — shared tail for store() and place(). */
+    private function finalizePlacedResponse(SalesInvoice $placed, string $message): JsonResponse
+    {
         if (! in_array($placed->etims_status, ['signed', 'stamped'])) {
             try {
                 app(EtimsService::class)->stampInvoice($placed);
@@ -689,7 +756,45 @@ public function showCredit(int $id): JsonResponse
             }
         }
 
-        return ApiResponse::success($placed->fresh(), 'Sales invoice placed');
+        // ── Auto-initiate collection for online payment channels ───────────────
+        // A channel chosen at invoice-entry time (payment_provider/payment_channel_code —
+        // see store()) means the customer intends to pay this way; placing the
+        // invoice is the natural trigger. Best-effort like eTIMS above: a failed
+        // STK push / bank-instructions lookup must not roll back or block the
+        // already-committed invoice — the payment can always be retried via
+        // POST /sales/payments/initiate.
+        $paymentChannelMap = ['mpesa' => 'mpesa_stk', 'bank' => 'bank_transfer'];
+        $payment = null;
+
+        if ($channel = $paymentChannelMap[$placed->payment_provider] ?? null) {
+            try {
+                $transaction = app(PaymentService::class)->initiate([
+                    'channel'           => $channel,
+                    'debtor_no'         => $placed->debtor_no,
+                    'inv_no'            => $placed->inv_no,
+                    'amount'            => $placed->amount_total,
+                    'phone'             => $placed->contact_phone ?: $placed->customer?->phone,
+                    'bank_account_code' => $placed->payment_channel_code,
+                    'memo'              => "Invoice {$placed->inv_no}",
+                    'initiated_by'      => auth()->user()?->user_id ?? 'system',
+                ]);
+
+                $payment = [
+                    'reference'    => $transaction->reference,
+                    'channel'      => $transaction->channel,
+                    'status'       => $transaction->status,
+                    'instructions' => $transaction->raw_response['instructions'] ?? null,
+                ];
+            } catch (\Throwable $e) {
+                Log::error('Payment initiation failed for invoice ' . $placed->inv_no . ': ' . $e->getMessage());
+                $payment = ['channel' => $channel, 'status' => 'failed', 'error' => $e->getMessage()];
+            }
+        }
+
+        $result = $placed->fresh();
+        $result->payment = $payment;
+
+        return ApiResponse::success($result, $message);
     }
 
     public function stamp(int $id): JsonResponse

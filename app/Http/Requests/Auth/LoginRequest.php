@@ -20,6 +20,19 @@ class LoginRequest extends FormRequest
     }
 
     /**
+     * Trim stray whitespace (browser autofill/copy-paste) before validation —
+     * the user lookup in AuthService::authenticateByEmail() does an exact
+     * `WHERE email = ?` with no trimming, so an untrimmed value silently
+     * fails the lookup entirely (short-circuits before the password check).
+     */
+    protected function prepareForValidation(): void
+    {
+        if ($this->has('email')) {
+            $this->merge(['email' => trim((string) $this->input('email'))]);
+        }
+    }
+
+    /**
      * Get the validation rules that apply to the request.
      */
     public function rules(): array

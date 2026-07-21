@@ -25,6 +25,22 @@ use Illuminate\Support\Facades\DB;
 
 class CustomerController extends Controller
 {
+    /**
+     * Lightweight list for map plotting / merchandising visit tracking —
+     * only customers with coordinates set, capped for response size.
+     */
+    public function mapLocations(): JsonResponse
+    {
+        $customers = Customer::whereNotNull('latitude')
+            ->whereNotNull('longitude')
+            ->where('inactive', false)
+            ->orderBy('name')
+            ->limit(2000)
+            ->get(['debtor_no', 'name', 'short_name', 'address', 'latitude', 'longitude']);
+
+        return ApiResponse::success($customers, 'Customer locations retrieved');
+    }
+
     public function index(Request $request): JsonResponse
     {
         $q        = trim($request->get('q', ''));
@@ -104,6 +120,8 @@ class CustomerController extends Controller
             'dimension_id'             => 'nullable|integer',
             'dimension2_id'            => 'nullable|integer',
             'inactive'                 => 'nullable|boolean',
+            'latitude'                 => 'nullable|numeric|between:-90,90',
+            'longitude'                => 'nullable|numeric|between:-180,180',
         ]);
 
         $num = Customer::nextCustomerNumber();
@@ -113,6 +131,21 @@ class CustomerController extends Controller
         }
 
         $customer = Customer::create($data);
+
+        // Every customer needs at least one branch to be invoiceable — the
+        // mobile app's sales screens (Direct Sale/Order Entry/Direct
+        // Delivery) all resolve delivery/billing details through
+        // customer_branches, so a customer with zero branches (e.g. one
+        // just converted from a farmer, with no separate "Add Branch" step
+        // ever run) would otherwise be pickable in the list but broken the
+        // moment someone tries to invoice against it.
+        CustomerBranch::create([
+            'debtor_no'   => $customer->debtor_no,
+            'branch_name' => 'Head Office',
+            'phone'       => $data['phone'] ?? null,
+            'deliver_to'  => $data['name'],
+            'address'     => $data['address'] ?? null,
+        ]);
 
         return ApiResponse::created($customer, 'Customer created');
     }
@@ -144,6 +177,8 @@ class CustomerController extends Controller
             'dimension_id'             => 'nullable|integer',
             'dimension2_id'            => 'nullable|integer',
             'inactive'                 => 'nullable|boolean',
+            'latitude'                 => 'nullable|numeric|between:-90,90',
+            'longitude'                => 'nullable|numeric|between:-180,180',
         ]);
 
         $customer->update($data);

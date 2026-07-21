@@ -19,12 +19,12 @@ class SupplierListController extends Controller
 
         if ($tab === 'promote') {
             // Promote Suppliers from the purchase suppliers table
-            $query = DB::table('suppliers')->orderBy('supp_name');
+            $query = DB::table('suppliers')->orderBy('supplierName');
             if ($status === 'active') $query->where('inactive', false);
 
             $rows = $query->get([
-                'id', 'supp_no', 'supp_name', 'phone', 'email',
-                'address', 'currency', 'inactive',
+                'supplierId as id', 'supplierReference as supp_no', 'supplierName as supp_name',
+                'contactPerson', 'address', DB::raw('currencyCode as currency'), 'inactive',
             ]);
 
             return ApiResponse::success([
@@ -42,8 +42,12 @@ class SupplierListController extends Controller
 
             $suppliers = DB::table('suppliers')
                 ->when($status === 'active', fn ($q) => $q->where('inactive', false))
-                ->get(['id', 'supp_no', 'supp_name', 'phone', 'email',
-                       DB::raw("IIF(inactive,0,1) as status"), DB::raw("'supplier' as source")]);
+                ->get([
+                    'supplierId as id', 'supplierReference as supp_no', 'supplierName as supp_name',
+                    'contactPerson',
+                    DB::raw("IIF(inactive,'inactive','active') as status"),
+                    DB::raw("'supplier' as source"),
+                ]);
 
             $all = $farmers->merge($suppliers)->sortBy('supp_name')->values();
 

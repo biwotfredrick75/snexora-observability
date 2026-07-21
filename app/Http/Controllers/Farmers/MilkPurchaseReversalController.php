@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Farmers;
 
+use App\Events\DashboardEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
 use App\Models\MilkPurchase;
@@ -181,6 +182,12 @@ class MilkPurchaseReversalController extends Controller
             }
 
             DB::commit();
+
+            try {
+                broadcast(new DashboardEvent('milk_purchase', 'reversed', ['count' => $reversed]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Dashboard broadcast failed: ' . $e->getMessage());
+            }
 
             return ApiResponse::success([
                 'reversed' => $reversed,

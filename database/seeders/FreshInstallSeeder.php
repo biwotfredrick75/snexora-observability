@@ -109,7 +109,7 @@ class FreshInstallSeeder extends Seeder
         $this->command->info('');
         $this->command->info('✅ Fresh installation complete!');
         $this->command->info('');
-        $this->command->line('  Admin login:  admin@verp.local / Admin@123456');
+        $this->command->line('  Admin login:  admin@nexora.local / Admin@123456');
         $this->command->line('  Set SEED_SAMPLE_DATA=true to seed farmers, suppliers, customers & items.');
         $this->command->info('');
     }
@@ -130,6 +130,8 @@ class FreshInstallSeeder extends Seeder
                 'phone'         => '',
                 'language'      => 'en',
                 'theme'         => 'light',
+                'print_profile' => 'default',
+                'default_store' => 'MAIN',
                 'page_size'     => 'A4',
                 'prices_dec'    => 2,
                 'qty_dec'       => 2,

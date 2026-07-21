@@ -7,6 +7,7 @@ use App\Http\Responses\ApiResponse;
 use App\Models\AppModuleConfig;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Spatie\Permission\Models\Role;
 
 class AppModuleController extends Controller
 {
@@ -22,6 +23,8 @@ class AppModuleController extends Controller
                 'label'       => $def['label'],
                 'description' => $def['description'],
                 'is_enabled'  => $row ? (bool) $row->is_enabled : true,
+                // null = not configured yet — app falls back to its built-in role list.
+                'roles'       => $row?->roles,
             ];
         });
 
@@ -39,21 +42,28 @@ class AppModuleController extends Controller
         }
 
         $validated = $request->validate([
-            'is_enabled' => 'required|boolean',
+            'is_enabled' => 'sometimes|required|boolean',
+            'roles'      => 'sometimes|nullable|array',
+            'roles.*'    => 'string|distinct|in:'.Role::where('guard_name', 'api')->pluck('name')->implode(','),
         ]);
 
-        $module = AppModuleConfig::updateOrCreate(
-            ['module_id'   => $moduleId],
-            [
-                'label'       => $def['label'],
-                'description' => $def['description'],
-                'is_enabled'  => $validated['is_enabled'],
-            ]
-        );
+        $module = AppModuleConfig::firstOrNew(['module_id' => $moduleId]);
+        $module->label       = $def['label'];
+        $module->description = $def['description'];
+        if (array_key_exists('is_enabled', $validated)) {
+            $module->is_enabled = $validated['is_enabled'];
+        }
+        if (array_key_exists('roles', $validated)) {
+            // Empty array = explicitly "no roles" (module hidden from everyone);
+            // omit the key entirely to leave the existing config untouched.
+            $module->roles = $validated['roles'];
+        }
+        $module->save();
 
         return ApiResponse::success([
-            'module_id'  => $module->module_id,
-            'is_enabled' => (bool) $module->is_enabled,
+            'module_id'   => $module->module_id,
+            'is_enabled'  => (bool) $module->is_enabled,
+            'roles'       => $module->roles,
         ], 'Module updated');
     }
 }

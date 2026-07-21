@@ -11,6 +11,7 @@ use App\Http\Controllers\Analytics\AiChatController;
 use App\Http\Controllers\Analytics\FinancialAnalyticsController;
 use App\Http\Controllers\Audit\AuditController;
 use App\Http\Controllers\Esp\EspController;
+use App\Http\Controllers\Sacco\SaccoController;
 use App\Http\Controllers\Setup\EtimsSetupController;
 use App\Http\Controllers\Etims\EtimsController;
 use App\Http\Controllers\Etims\EtimsSettingsController;
@@ -81,6 +82,7 @@ use App\Http\Controllers\Sales\CustomerPaymentController;
 use App\Http\Controllers\Sales\CustomerDepositController;
 use App\Http\Controllers\Sales\MpesaController;
 use App\Http\Controllers\Sales\PaymentChannelController;
+use App\Http\Controllers\Sales\PaymentController;
 use App\Http\Controllers\Sales\ImportController;
 use App\Http\Controllers\Sales\SalesDashboardController;
 use App\Http\Controllers\Sales\CreditStatusController;
@@ -126,6 +128,7 @@ use App\Http\Controllers\Farmers\MilkPriceMemberController;
 use App\Http\Controllers\Farmers\MilkBuyingPriceTypeController;
 use App\Http\Controllers\Farmers\CheckoffServiceController;
 use App\Http\Controllers\Farmers\MilkQaParameterController;
+use App\Http\Controllers\Farmers\MilkQualitySettingController;
 use App\Http\Controllers\Farmers\FarmerController;
 use App\Http\Controllers\Farmers\FarmerContactController;
 use App\Http\Controllers\Farmers\MilkPurchaseController;
@@ -138,6 +141,7 @@ use App\Http\Controllers\Farmers\MilkLocationTransferController;
 use App\Http\Controllers\Farmers\FarmerSupplierPaymentController;
 use App\Http\Controllers\Farmers\SupplierListController;
 use App\Http\Controllers\Farmers\FarmerAdvanceReportController;
+use App\Http\Controllers\Farmers\FarmersSpillageController;
 use App\Http\Controllers\Farmers\GraderPayrollController;
 use App\Http\Controllers\Farmers\ImportServicesController;
 
@@ -208,14 +212,14 @@ Route::middleware('auth:api')->group(function () {
     Route::prefix('roles')->middleware('permission:view-roles')->group(function () {
         Route::get('/', [RolePermissionController::class, 'getAllRoles']);
         Route::get('{roleName}/permissions', [RolePermissionController::class, 'getRoleWithPermissions']);
-        
+
         Route::post('/', [RolePermissionController::class, 'createRole'])->middleware('permission:create-roles');
         Route::delete('{roleName}', [RolePermissionController::class, 'deleteRole'])->middleware('permission:delete-roles');
     });
 
     Route::prefix('permissions')->middleware('permission:view-permissions')->group(function () {
         Route::get('/', [RolePermissionController::class, 'getAllPermissions']);
-        
+
         Route::post('/', [RolePermissionController::class, 'createPermission'])->middleware('permission:create-permissions');
         Route::delete('{permissionName}', [RolePermissionController::class, 'deletePermission'])->middleware('permission:delete-permissions');
     });
@@ -326,6 +330,10 @@ Route::middleware('auth:api')->group(function () {
         // ── Void Transaction ───────────────────────────────────────────────────
         Route::get('void-transaction/search',  [VoidTransactionController::class, 'search']);
         Route::post('void-transaction/void',   [VoidTransactionController::class, 'void']);
+
+        // ── Activity Log (audit trail) ──────────────────────────────────────────
+        Route::get('activity-log/actions', [\App\Http\Controllers\Setup\ActivityLogController::class, 'actions']);
+        Route::get('activity-log',         [\App\Http\Controllers\Setup\ActivityLogController::class, 'index']);
 
         // ── View Transactions ──────────────────────────────────────────────────
         Route::get('view-transactions/search', [ViewTransactionController::class, 'search']);
@@ -849,6 +857,7 @@ Route::middleware('auth:api')->group(function () {
 
     // Customers — form-data MUST be before {id} to avoid route conflict
     Route::get('sales/customers/form-data',     [CustomerController::class, 'formData']);
+    Route::get('sales/customers/map-locations', [CustomerController::class, 'mapLocations']);
     Route::get('sales/customers',               [CustomerController::class, 'index']);
     Route::post('sales/customers',              [CustomerController::class, 'store']);
     Route::get('sales/customers/by-farmer/{farmer_no}', [CustomerController::class, 'byFarmer']);
@@ -1054,6 +1063,27 @@ Route::middleware('auth:api')->group(function () {
     Route::post  ('esp/sales/{sale}/void',               [EspController::class, 'voidSale'])->middleware('permission:manage-esp');
     Route::post  ('esp/sales/{sale}/adjust',             [EspController::class, 'adjustSale'])->middleware('permission:manage-esp');
 
+    // ── SACCO (Member Savings, Shares & Loans) ────────────────────────────────
+    Route::get   ('sacco/dashboard',                     [SaccoController::class, 'dashboard'])->middleware('permission:view-sacco');
+    Route::get   ('sacco/members',                       [SaccoController::class, 'indexMembers'])->middleware('permission:view-sacco');
+    Route::post  ('sacco/members',                       [SaccoController::class, 'storeMember'])->middleware('permission:manage-sacco');
+    Route::get   ('sacco/members/{member}',               [SaccoController::class, 'showMember'])->middleware('permission:view-sacco');
+    Route::put   ('sacco/members/{member}',               [SaccoController::class, 'updateMember'])->middleware('permission:manage-sacco');
+    Route::get   ('sacco/accounts',                      [SaccoController::class, 'indexAccounts'])->middleware('permission:view-sacco');
+    Route::post  ('sacco/accounts/{account}/deposit',    [SaccoController::class, 'deposit'])->middleware('permission:manage-sacco');
+    Route::post  ('sacco/accounts/{account}/withdraw',   [SaccoController::class, 'withdraw'])->middleware('permission:manage-sacco');
+    Route::get   ('sacco/loan-products',                 [SaccoController::class, 'indexLoanProducts'])->middleware('permission:view-sacco');
+    Route::post  ('sacco/loan-products',                 [SaccoController::class, 'storeLoanProduct'])->middleware('permission:manage-sacco');
+    Route::get   ('sacco/loans',                         [SaccoController::class, 'indexLoans'])->middleware('permission:view-sacco');
+    Route::post  ('sacco/loans',                         [SaccoController::class, 'storeLoanApplication'])->middleware('permission:manage-sacco');
+    Route::get   ('sacco/loans/{loan}',                  [SaccoController::class, 'showLoan'])->middleware('permission:view-sacco');
+    Route::post  ('sacco/loans/{loan}/approve',          [SaccoController::class, 'approveLoan'])->middleware('permission:approve-sacco-loans');
+    Route::post  ('sacco/loans/{loan}/disburse',         [SaccoController::class, 'disburseLoan'])->middleware('permission:approve-sacco-loans');
+    Route::post  ('sacco/loans/{loan}/reject',           [SaccoController::class, 'rejectLoan'])->middleware('permission:approve-sacco-loans');
+    Route::post  ('sacco/loans/{loan}/repay-cash',       [SaccoController::class, 'repayCash'])->middleware('permission:manage-sacco');
+    Route::post  ('sacco/checkoff/post',                 [SaccoController::class, 'postCheckoffForPeriod'])->middleware('permission:manage-sacco');
+    Route::get   ('sacco/repayments',                    [SaccoController::class, 'repaymentHistory'])->middleware('permission:view-sacco');
+
     // ── Audit ────────────────────────────────────────────────────────────────
     Route::post('audit/run', [AuditController::class, 'run']);
 
@@ -1088,6 +1118,11 @@ Route::middleware('auth:api')->group(function () {
     Route::get('sales/mpesa',                             [MpesaController::class, 'index']);
     Route::post('sales/mpesa',                            [MpesaController::class, 'store']);
     Route::post('sales/mpesa/{id}/transfer',              [MpesaController::class, 'transfer']);
+
+    // ── Payments (dynamic: STK push + bank transfer, see config/payment.php) ──
+    Route::post('sales/payments/initiate',                            [PaymentController::class, 'initiate']);
+    Route::get('sales/payments/{reference}/status',                   [PaymentController::class, 'status']);
+    Route::post('sales/payments/bank-transfer/{reference}/confirm',   [PaymentController::class, 'confirmBankTransfer']);
 
     // Sales Deliveries (Direct)
     Route::get('sales/deliveries/{id}/gl-entries',        [SalesDeliveryController::class, 'glEntries']);
@@ -1173,9 +1208,13 @@ Route::middleware('auth:api')->group(function () {
         Route::put('qa-parameters/{id}',        [MilkQaParameterController::class, 'update']);
         Route::delete('qa-parameters/{id}',     [MilkQaParameterController::class, 'destroy']);
 
+        Route::get('quality-settings',          [MilkQualitySettingController::class, 'show']);
+        Route::put('quality-settings',          [MilkQualitySettingController::class, 'update']);
+
         // Farmers (suppliers)
         Route::get('farmers/search',             [FarmerController::class, 'search']);
         Route::get('farmers/form-data',         [FarmerController::class, 'formData']);
+        Route::get('farmers/map-locations',     [FarmerController::class, 'mapLocations']);
         Route::get('farmers',                   [FarmerController::class, 'index']);
         Route::post('farmers',                  [FarmerController::class, 'store']);
         Route::get('farmers/{id}',              [FarmerController::class, 'show']);
@@ -1192,6 +1231,7 @@ Route::middleware('auth:api')->group(function () {
         // Bulk Milk Purchases
         Route::get('milk-purchases/form-data',             [MilkPurchaseController::class, 'formData']);
         Route::get('milk-purchases/summary',              [MilkPurchaseController::class, 'summary']);
+        Route::get('milk-purchases/rejections',           [MilkPurchaseController::class, 'rejections']);
         Route::post('milk-purchases/reserve-reference',   [MilkPurchaseController::class, 'reserveReference']);
         Route::post('milk-purchases/bulk-approve',        [MilkPurchaseController::class, 'bulkApprove']);
         Route::post('milk-purchases/bulk-reject',         [MilkPurchaseController::class, 'bulkReject']);
@@ -1235,6 +1275,14 @@ Route::middleware('auth:api')->group(function () {
         Route::get('milk-location-transfers',                    [MilkLocationTransferController::class, 'index']);
         Route::post('milk-location-transfers',                   [MilkLocationTransferController::class, 'store']);
 
+        // Milk Transfer Receptions (cooling-store reconciliation of a
+        // dispatched trip — weighing, quality retest, accept/reject, and
+        // transporter charge-back)
+        Route::get('milk-transfer-receptions/pending', [\App\Http\Controllers\Farmers\MilkTransferReceptionController::class, 'pendingTrips']);
+        Route::get('milk-transfer-receptions',         [\App\Http\Controllers\Farmers\MilkTransferReceptionController::class, 'index']);
+        Route::post('milk-transfer-receptions',        [\App\Http\Controllers\Farmers\MilkTransferReceptionController::class, 'store']);
+        Route::get('milk-transfer-receptions/{id}',    [\App\Http\Controllers\Farmers\MilkTransferReceptionController::class, 'show']);
+
         // Farmer Supplier Payments
         Route::get('supplier-payments/form-data',       [FarmerSupplierPaymentController::class, 'formData']);
         Route::get('supplier-payments/advance-limit',   [FarmerSupplierPaymentController::class, 'advanceLimit']);
@@ -1255,6 +1303,10 @@ Route::middleware('auth:api')->group(function () {
         Route::post('grader-payroll/settle',     [GraderPayrollController::class, 'settle']);
         Route::post('grader-payroll/advances',   [GraderPayrollController::class, 'storeAdvance']);
         Route::post('grader-payroll/rates',      [GraderPayrollController::class, 'saveRate']);
+
+        // Spillage — optional grader accountability charge (write-off itself
+        // is posted via the generic Inventory Adjustments engine)
+        Route::post('spillage/{adjustmentId}/charge-grader', [FarmersSpillageController::class, 'chargeGrader']);
 
         // Import Services
         Route::get('import-services/form-data',    [ImportServicesController::class, 'formData']);
@@ -1315,6 +1367,7 @@ Route::middleware('auth:api')->group(function () {
         Route::put('work-centres/{id}',                  [\App\Http\Controllers\Manufacturing\WorkCentreController::class, 'update']);
         Route::delete('work-centres/{id}',               [\App\Http\Controllers\Manufacturing\WorkCentreController::class, 'destroy']);
         Route::get('boms/items-search',                  [\App\Http\Controllers\Manufacturing\BomController::class,        'itemsSearch']);
+        Route::post('boms/import',                       [\App\Http\Controllers\Manufacturing\BomController::class,        'import']);
         Route::get('boms',                               [\App\Http\Controllers\Manufacturing\BomController::class,        'index']);
         Route::post('boms',                              [\App\Http\Controllers\Manufacturing\BomController::class,        'store']);
         Route::get('boms/{id}',                          [\App\Http\Controllers\Manufacturing\BomController::class,        'show']);
@@ -1332,7 +1385,6 @@ Route::middleware('auth:api')->group(function () {
         Route::post('work-orders/{id}/labour',           [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'addLabour']);
         Route::post('work-orders/{id}/overhead',              [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'addOverhead']);
         Route::get('work-orders/{id}/cost-sheet',             [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'costSheet']);
-        Route::patch('work-orders/{id}/items/{itemId}',       [\App\Http\Controllers\Manufacturing\WorkOrderController::class,  'updateItem']);
         Route::get('work-orders/{id}/stages',                 [\App\Http\Controllers\Manufacturing\WorkOrderStageController::class, 'index']);
         Route::post('work-orders/{id}/stages/{stageCode}/complete', [\App\Http\Controllers\Manufacturing\WorkOrderStageController::class, 'complete']);
         // Production Plans
@@ -1673,3 +1725,8 @@ Route::middleware('auth:api')->prefix('payroll')->group(function () {
 
 // ── Internal service callbacks (HMAC-authenticated, no Bearer token) ──────────
 Route::post('internal/bulk-approval-result', BulkApprovalCallbackController::class);
+
+// ── Payment provider webhooks (no Bearer token — Safaricom can't send one) ────
+// Keep this URL out of anything a customer-facing client calls; restrict at the
+// network/firewall level to Safaricom's published IP ranges if possible.
+Route::post('payments/mpesa/stk/callback', [PaymentController::class, 'mpesaStkCallback']);

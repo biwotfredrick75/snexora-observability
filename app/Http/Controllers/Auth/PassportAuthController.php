@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\ActivityLog;
 use App\Services\Auth\AuthService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -100,6 +101,7 @@ class PassportAuthController extends Controller
             if ($user) {
                 // Revoke all tokens for the user
                 $user->tokens()->update(['revoked' => true]);
+                ActivityLog::record('logout', "{$user->real_name} logged out", actor: $user);
             }
 
             return ApiResponse::deleted('Successfully logged out');

@@ -169,7 +169,7 @@ class CreditNoteController extends Controller
             $debtorsGlCode = ($company->debtors_gl_code ?? null) ?: 'DEBTORS';
 
             match ($cn->cn_type) {
-                'return', 'return_to_store' => $this->placeReturn($cn, $company, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
+                'return', 'return_to_store' => $this->placeReturn($cn, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
                 'damage'    => $this->placeReturnDamage($cn, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
                 'discount'  => $this->placeDiscount($cn, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
                 'write_off' => $this->placeWriteOff($cn, $glSetting, $createdBy, $cnNo, $tranDate, $debtorsGlCode),
@@ -209,7 +209,7 @@ class CreditNoteController extends Controller
 
     // ── Return: goods back to inventory + COGS reversal + sales reversal ──────
 
-    private function placeReturn(CreditNote $cn, object $company, object $glSetting, string $createdBy, string $cnNo, string $tranDate, string $debtorsGlCode): void
+    private function placeReturn(CreditNote $cn, object $glSetting, string $createdBy, string $cnNo, string $tranDate, string $debtorsGlCode): void
     {
         // Resolve location code: credit note location → invoice location → first active location
         $locationId = $cn->location_id

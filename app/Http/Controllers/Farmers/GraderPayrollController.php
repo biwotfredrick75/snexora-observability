@@ -70,41 +70,74 @@ class GraderPayrollController extends Controller
             ->get(['sales_type', 'grader_rate'])
             ->keyBy('sales_type');   // e.g. ['Aspendos' => {grader_rate: 2.5}]
 
-        // ── Milk collected per grader, segmented by destination ───────────────
-        // milk_purchases.grader_id  → inventory_locations (the collection station)
-        // milk_routes.location_id   → inventory_locations (the destination/transfer plant)
-        // destination.price_list    → sales_type key used to look up grader_rate
-        $query = DB::table('milk_purchase_items as mpi')
-            ->join('milk_purchases as mp',        'mp.id',  '=', 'mpi.purchase_id')
-            ->join('inventory_locations as gl',   'gl.id',  '=', 'mp.grader_id')
-            ->leftJoin('milk_routes as mr',        'mr.id',  '=', 'mp.route_id')
-            ->leftJoin('inventory_locations as dl','dl.id',  '=', 'mr.location_id')
+        // ── Milk COLLECTED per grader (from farmers) — informational only ──────
+        // milk_purchases.grader_id → inventory_locations (the collection station).
+        // This is what the grader picked up from farmers, before it's actually
+        // hauled to a destination and confirmed received — see delivery query
+        // below for what payroll is actually based on.
+        $collectionQuery = DB::table('milk_purchase_items as mpi')
+            ->join('milk_purchases as mp', 'mp.id', '=', 'mpi.purchase_id')
+            ->join('inventory_locations as gl', 'gl.id', '=', 'mp.grader_id')
             ->whereBetween('mp.invoice_date', [$startDate, $endDate])
             ->where('mp.status', '!=', 'cancelled')
             ->whereNotNull('mp.grader_id');
 
         if ($graderId) {
-            $query->where('mp.grader_id', $graderId);
+            $collectionQuery->where('mp.grader_id', $graderId);
         }
 
-        $collectionRows = $query
-            ->selectRaw('
+        $collectionRows = $collectionQuery
+            ->selectRaw("
                 mp.grader_id                    AS grader_loc_id,
                 gl.code                         AS grader_code,
                 gl.name                         AS grader_name,
-                mr.location_id                  AS dest_loc_id,
+                COUNT(DISTINCT mpi.farmer_id)   AS farmer_count,
+                SUM(CASE WHEN mpi.quality_status = 'rejected' THEN 0 ELSE mpi.quantity END) AS collected_qty,
+                SUM(CASE WHEN mpi.quality_status = 'rejected' THEN mpi.quantity ELSE 0 END) AS rejected_qty
+            ")
+            ->groupBy('mp.grader_id', 'gl.code', 'gl.name')
+            ->orderBy('gl.name')
+            ->get();
+
+        // ── Milk DELIVERED per grader (as transporter), segmented by
+        // destination — THIS is what the grader is actually paid on ──────────
+        // milk_transfer_receptions.accepted_qty is the litreage confirmed to
+        // have actually reached the destination (e.g. Main Factory) — anything
+        // still in transit (dispatched, not yet received) isn't payable yet,
+        // and anything rejected/short on arrival never counts either way.
+        // Rate is keyed by "price type" (sales_type = a location's price_list):
+        // the destination's price type overrides when set; otherwise it falls
+        // back to the collecting grader/station's OWN price_list.
+        $deliveryQuery = DB::table('milk_transfer_receptions as r')
+            ->join('inventory_locations as gl', 'gl.id', '=', 'r.transporter_id')
+            ->join('inventory_locations as dl', 'dl.id', '=', 'r.to_location_id')
+            ->whereBetween('r.received_at', ["{$startDate} 00:00:00", "{$endDate} 23:59:59"]);
+
+        if ($graderId) {
+            $deliveryQuery->where('r.transporter_id', $graderId);
+        }
+
+        $deliveryRows = $deliveryQuery
+            ->selectRaw("
+                r.transporter_id                AS grader_loc_id,
+                gl.code                         AS grader_code,
+                gl.name                         AS grader_name,
+                gl.price_list                   AS grader_price_list,
+                r.to_location_id                AS dest_loc_id,
                 dl.name                         AS dest_name,
                 dl.price_list                   AS dest_price_list,
-                COUNT(DISTINCT mpi.farmer_id)   AS farmer_count,
-                SUM(mpi.quantity)               AS total_qty
-            ')
-            ->groupBy('mp.grader_id', 'gl.code', 'gl.name',
-                      'mr.location_id', 'dl.name', 'dl.price_list')
+                SUM(r.accepted_qty)                    AS delivered_qty,
+                SUM(r.rejected_qty + r.shortage_qty)   AS transfer_variance_qty
+            ")
+            ->groupBy('r.transporter_id', 'gl.code', 'gl.name', 'gl.price_list',
+                      'r.to_location_id', 'dl.name', 'dl.price_list')
             ->orderBy('gl.name')
             ->get();
 
         // ── Advances given to graders this period ─────────────────────────────
-        $graderIds   = $collectionRows->pluck('grader_loc_id')->unique()->values()->toArray();
+        $graderIds = $collectionRows->pluck('grader_loc_id')
+            ->merge($deliveryRows->pluck('grader_loc_id'))
+            ->unique()->values()->toArray();
         $advancesMap = DB::table('grader_advances')
             ->whereIn('grader_id', $graderIds)
             ->whereBetween('advance_date', [$startDate, $endDate])
@@ -123,35 +156,62 @@ class GraderPayrollController extends Controller
             ->groupBy('party_id')
             ->pluck('esp_total', 'grader_id');
 
+        // ── Charges raised against the grader as transporter — milk shortage
+        // / rejection during a cooling-store transfer (MilkTransferReceptionController)
+        // — not yet settled. Milk rejected at the point of collection (a
+        // farmer-quality outcome, not a transport failure) is NOT charged
+        // here — see rejected_qty below, which is informational only.
+        $deductionMap = DB::table('grader_deductions')
+            ->whereIn('grader_id', $graderIds)
+            ->where('settled', false)
+            ->selectRaw('grader_id, SUM(amount) AS deduction_total')
+            ->groupBy('grader_id')
+            ->pluck('deduction_total', 'grader_id');
+
         // ── Aggregate per grader ──────────────────────────────────────────────
         $graderMap = [];
 
+        $blankGrader = fn ($gid, $code, $name) => [
+            'grader_id'             => $gid,
+            'grader_code'           => $code,
+            'grader_name'           => $name,
+            'farmer_count'          => 0,
+            'collected_qty'         => 0.0,
+            'rejected_qty'          => 0.0,
+            'delivered_qty'         => 0.0,
+            'transfer_variance_qty' => 0.0,
+            'gross_pay'             => 0.0,
+            'segments'              => [],
+        ];
+
+        // Collected — informational only, does not feed gross_pay.
         foreach ($collectionRows as $row) {
             $gid = $row->grader_loc_id;
+            $graderMap[$gid] ??= $blankGrader($gid, $row->grader_code, $row->grader_name);
 
-            if (!isset($graderMap[$gid])) {
-                $graderMap[$gid] = [
-                    'grader_id'    => $gid,
-                    'grader_code'  => $row->grader_code,
-                    'grader_name'  => $row->grader_name,
-                    'farmer_count' => 0,
-                    'total_qty'    => 0.0,
-                    'gross_pay'    => 0.0,
-                    'segments'     => [],
-                ];
-            }
+            $graderMap[$gid]['farmer_count']  += (int) $row->farmer_count;
+            $graderMap[$gid]['collected_qty'] += (float) $row->collected_qty;
+            $graderMap[$gid]['rejected_qty']  += (float) $row->rejected_qty;
+        }
 
-            $qty        = (float) $row->total_qty;
-            $priceList  = $row->dest_price_list ?? '';
+        // Delivered — this is what the grader is actually paid on.
+        foreach ($deliveryRows as $row) {
+            $gid = $row->grader_loc_id;
+            $graderMap[$gid] ??= $blankGrader($gid, $row->grader_code, $row->grader_name);
+
+            $qty        = (float) $row->delivered_qty;
+            // Destination price type overrides when set; otherwise fall back
+            // to the collecting grader/station's own price type.
+            $priceList  = !empty($row->dest_price_list) ? $row->dest_price_list : ($row->grader_price_list ?? '');
             $rateRow    = $priceList ? ($graderRates[$priceList] ?? null) : null;
             $rate       = $rateRow  ? (float) $rateRow->grader_rate : 0.0;
             $segAmount  = round($qty * $rate, 4);
 
-            $graderMap[$gid]['farmer_count'] += (int) $row->farmer_count;
-            $graderMap[$gid]['total_qty']    += $qty;
-            $graderMap[$gid]['gross_pay']    += $segAmount;
-            $graderMap[$gid]['segments'][]    = [
-                'destination'  => $row->dest_name ?? '(no destination)',
+            $graderMap[$gid]['delivered_qty']         += $qty;
+            $graderMap[$gid]['transfer_variance_qty']  += (float) $row->transfer_variance_qty;
+            $graderMap[$gid]['gross_pay']              += $segAmount;
+            $graderMap[$gid]['segments'][]              = [
+                'destination'  => $row->dest_name,
                 'price_list'   => $priceList,
                 'qty'          => round($qty, 3),
                 'rate'         => $rate,
@@ -160,39 +220,49 @@ class GraderPayrollController extends Controller
             ];
         }
 
-        // ── Build final rows with advance, ESP deduction & balance ────────────
-        $graders = collect(array_values($graderMap))->map(function ($g) use ($advancesMap, $espMap) {
-            $gross   = round($g['gross_pay'], 2);
-            $advance = round((float) ($advancesMap[$g['grader_id']] ?? 0), 2);
-            $esp     = round((float) ($espMap[$g['grader_id']] ?? 0), 2);
-            $net     = max(0.0, round($gross - $advance - $esp, 2));
-            // Balance = advance/ESP amount that couldn't be recovered this period (informational only)
-            $balance = round(max(0.0, ($advance + $esp) - $gross), 2);
+        // ── Build final rows with advance, ESP deduction, shortage/rejection
+        // deduction & balance ──────────────────────────────────────────────
+        $graders = collect(array_values($graderMap))->map(function ($g) use ($advancesMap, $espMap, $deductionMap) {
+            $gross      = round($g['gross_pay'], 2);
+            $advance    = round((float) ($advancesMap[$g['grader_id']] ?? 0), 2);
+            $esp        = round((float) ($espMap[$g['grader_id']] ?? 0), 2);
+            $deduction  = round((float) ($deductionMap[$g['grader_id']] ?? 0), 2);
+            $net        = max(0.0, round($gross - $advance - $esp - $deduction, 2));
+            // Balance = amount that couldn't be recovered this period (informational only)
+            $balance = round(max(0.0, ($advance + $esp + $deduction) - $gross), 2);
 
             return [
-                'grader_id'        => $g['grader_id'],
-                'grader_code'      => $g['grader_code'],
-                'grader_name'      => $g['grader_name'],
-                'farmer_count'     => $g['farmer_count'],
-                'total_qty'        => round($g['total_qty'], 3),
-                'segments'         => $g['segments'],
-                'gross_pay'        => $gross,
-                'advance'          => $advance,
-                'esp_deduction'    => $esp,
-                'balance'          => $balance,
-                'net_payable'      => $net,
+                'grader_id'             => $g['grader_id'],
+                'grader_code'           => $g['grader_code'],
+                'grader_name'           => $g['grader_name'],
+                'farmer_count'          => $g['farmer_count'],
+                'collected_qty'         => round($g['collected_qty'], 3),
+                'rejected_qty'          => round($g['rejected_qty'], 3),
+                'delivered_qty'         => round($g['delivered_qty'], 3),
+                'transfer_variance_qty' => round($g['transfer_variance_qty'], 3),
+                'segments'              => $g['segments'],
+                'gross_pay'             => $gross,
+                'advance'               => $advance,
+                'esp_deduction'         => $esp,
+                'shortage_deduction'    => $deduction,
+                'balance'               => $balance,
+                'net_payable'           => $net,
             ];
         });
 
         $totals = [
-            'grader_count'    => $graders->count(),
-            'farmer_count'    => $graders->sum('farmer_count'),
-            'total_qty'       => round($graders->sum('total_qty'), 3),
-            'gross_pay'       => round($graders->sum('gross_pay'), 2),
-            'total_advance'   => round($graders->sum('advance'), 2),
-            'total_esp'       => round($graders->sum('esp_deduction'), 2),
-            'total_balance'   => round($graders->sum('balance'), 2),
-            'net_payable'     => round($graders->sum('net_payable'), 2),
+            'grader_count'          => $graders->count(),
+            'farmer_count'          => $graders->sum('farmer_count'),
+            'collected_qty'         => round($graders->sum('collected_qty'), 3),
+            'rejected_qty'          => round($graders->sum('rejected_qty'), 3),
+            'delivered_qty'         => round($graders->sum('delivered_qty'), 3),
+            'transfer_variance_qty' => round($graders->sum('transfer_variance_qty'), 3),
+            'gross_pay'             => round($graders->sum('gross_pay'), 2),
+            'total_advance'         => round($graders->sum('advance'), 2),
+            'total_esp'             => round($graders->sum('esp_deduction'), 2),
+            'total_shortage'        => round($graders->sum('shortage_deduction'), 2),
+            'total_balance'         => round($graders->sum('balance'), 2),
+            'net_payable'           => round($graders->sum('net_payable'), 2),
         ];
 
         return ApiResponse::success([
@@ -224,31 +294,51 @@ class GraderPayrollController extends Controller
 
         DB::transaction(function () use ($graders, $datePaid, $ref) {
             foreach ($graders as $g) {
-                if (($g['esp_deduction'] ?? 0) <= 0) continue;
+                if (($g['esp_deduction'] ?? 0) > 0) {
+                    $remaining = (float) $g['esp_deduction'];
+                    $sales = DB::table('esp_farmer_sales')
+                        ->where('party_type', 'transporter')
+                        ->where('party_id', $g['grader_id'])
+                        ->where('party_deducted', false)
+                        ->where('status', '!=', 'void')
+                        ->orderBy('id')
+                        ->get(['id', 'total_amount']);
 
-                $remaining = (float) $g['esp_deduction'];
-                $sales = DB::table('esp_farmer_sales')
-                    ->where('party_type', 'transporter')
-                    ->where('party_id', $g['grader_id'])
-                    ->where('party_deducted', false)
-                    ->where('status', '!=', 'void')
-                    ->orderBy('id')
-                    ->get(['id', 'total_amount']);
+                    foreach ($sales as $sale) {
+                        if ($remaining <= 0.005) break;
+                        DB::table('esp_farmer_sales')->where('id', $sale->id)->update([
+                            'party_deducted'     => true,
+                            'party_deducted_at'  => $datePaid,
+                            'party_deducted_ref' => $ref,
+                            'updated_at'         => now(),
+                        ]);
+                        $remaining -= (float) $sale->total_amount;
+                    }
+                }
 
-                foreach ($sales as $sale) {
-                    if ($remaining <= 0.005) break;
-                    DB::table('esp_farmer_sales')->where('id', $sale->id)->update([
-                        'party_deducted'     => true,
-                        'party_deducted_at'  => $datePaid,
-                        'party_deducted_ref' => $ref,
-                        'updated_at'         => now(),
-                    ]);
-                    $remaining -= (float) $sale->total_amount;
+                if (($g['shortage_deduction'] ?? 0) > 0) {
+                    $remaining = (float) $g['shortage_deduction'];
+                    $deductions = DB::table('grader_deductions')
+                        ->where('grader_id', $g['grader_id'])
+                        ->where('settled', false)
+                        ->orderBy('id')
+                        ->get(['id', 'amount']);
+
+                    foreach ($deductions as $deduction) {
+                        if ($remaining <= 0.005) break;
+                        DB::table('grader_deductions')->where('id', $deduction->id)->update([
+                            'settled'     => true,
+                            'settled_at'  => $datePaid,
+                            'settled_ref' => $ref,
+                            'updated_at'  => now(),
+                        ]);
+                        $remaining -= (float) $deduction->amount;
+                    }
                 }
             }
         });
 
-        return ApiResponse::success($data, 'Grader payroll settled — ESP deductions recorded');
+        return ApiResponse::success($data, 'Grader payroll settled — ESP and shortage deductions recorded');
     }
 
     // ── Record advance to a grader ─────────────────────────────────────────────

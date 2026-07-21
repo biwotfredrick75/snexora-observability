@@ -36,6 +36,13 @@ class InventoryTransferController extends Controller
             $query->whereDate('date', '<=', $request->to);
         }
 
+        // Graders only see their own transfers — same created_by scoping as
+        // MilkLocationTransferController::index(). Office/web users (no
+        // grader role) keep the unscoped, all-transfers view.
+        if (auth()->user()?->hasRole('grader')) {
+            $query->where('created_by', auth()->user()->user_id);
+        }
+
         return ApiResponse::success($query->get(), 'Transfers retrieved');
     }
 

@@ -137,7 +137,7 @@ class PermissionSeeder extends Seeder
     {
         foreach ($permissions as $name => $description) {
             Permission::firstOrCreate(
-                ['name' => $name, 'guard_name' => 'web'],
+                ['name' => $name, 'guard_name' => 'api'],
                 ['description' => $description]
             );
         }
@@ -148,11 +148,12 @@ class PermissionSeeder extends Seeder
      */
     private function assignPermissionsToRoles(): void
     {
-        $adminRole = Role::findByName('admin');
-        $managerRole = Role::findByName('manager');
-        $supervisorRole = Role::findByName('supervisor');
-        $userRole = Role::findByName('user');
-        $viewerRole = Role::findByName('viewer');
+        $adminRole = Role::findByName('admin', 'api');
+        $managerRole = Role::findByName('manager', 'api');
+        $supervisorRole = Role::findByName('supervisor', 'api');
+        $userRole = Role::findByName('user', 'api');
+        $viewerRole = Role::findByName('viewer', 'api');
+        $salesRole = Role::findByName('sales', 'api');
 
         // Admin gets all permissions
         $adminRole->syncPermissions(Permission::all());
@@ -213,5 +214,12 @@ class PermissionSeeder extends Seeder
               ->orWhere('name', 'like', '%.export');
         })->get();
         $viewerRole->syncPermissions($viewerPermissions);
+
+        // Sales gets the sales module (minus delete) plus dashboard and reports
+        $salesPermissions = Permission::where(function ($q) {
+            $q->where('name', 'like', 'sales.%')
+              ->orWhereIn('name', ['dashboard.view', 'reports.view', 'reports.export']);
+        })->whereNotIn('name', ['sales.delete'])->get();
+        $salesRole->syncPermissions($salesPermissions);
     }
 }
