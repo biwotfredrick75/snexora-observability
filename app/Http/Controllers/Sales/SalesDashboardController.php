@@ -525,7 +525,7 @@ class SalesDashboardController extends Controller
             ->first();
 
         // Sold — raw milk sold via placed sales invoices, for the selected period
-        $sold = (float) DB::table('sales_invoice_items')
+        $soldGross = (float) DB::table('sales_invoice_items')
             ->join('sales_invoices', 'sales_invoices.id', '=', 'sales_invoice_items.inv_id')
             ->whereBetween('sales_invoices.invoice_date', [$from, $to])
             ->where('sales_invoice_items.stock_id', $rawMilkStockId)
@@ -533,28 +533,52 @@ class SalesDashboardController extends Controller
             ->when($locationId, fn ($q) => $q->where('sales_invoices.location_id', $locationId))
             ->sum('sales_invoice_items.qty');
 
-        // Stations — current on-hand raw-milk qty per location, a live
-        // snapshot (intentionally not date-ranged: stock on hand today
-        // includes milk received before $from — that's the correct reading
-        // of "how much milk is sitting here right now").
+        // Returned — raw milk physically returned via placed credit notes
+        // (cn_type return/return_to_store only; discount/write_off credit
+        // notes are pure financial adjustments with no stock movement, so
+        // they're excluded here). Netted off "sold" so the traceability
+        // figure reflects milk that actually stayed sold, not gross invoiced.
+        $returned = (float) DB::table('credit_note_items as cni')
+            ->join('credit_notes as cn', 'cn.id', '=', 'cni.cn_id')
+            ->whereBetween('cn.cn_date', [$from, $to])
+            ->where('cni.stock_id', $rawMilkStockId)
+            ->where('cn.status', 'placed')
+            ->whereIn('cn.cn_type', ['return', 'return_to_store'])
+            ->when($locationId, fn ($q) => $q->where('cn.location_id', $locationId))
+            ->sum('cni.qty');
+
+        $sold = max(0.0, $soldGross - $returned);
+
+        // Stations — milk collected (GRN receipt, type=25) and transferred
+        // in (type=13, receiving side only — dispatches are recorded as a
+        // negative qty at the source and excluded here) per location, for
+        // the selected period. Deliberately inbound-only: this answers
+        // "how much reached this station in the period", not a running
+        // balance — a station's total on-hand can differ (also reflects
+        // what left via sales/consumption/dispatch and stock from before
+        // $from).
         $stations = DB::table('stock_movements as sm')
             ->join('inventory_locations as l', 'l.code', '=', 'sm.loc_code')
             ->where('sm.stock_id', $rawMilkStockId)
+            ->where('sm.qty', '>', 0)
+            ->whereBetween('sm.tran_date', [$from, $to])
             ->where('l.inactive', 0)
             ->whereNotIn('l.type', ['Vendor', 'SALES'])
             ->when($locationId, fn ($q) => $q->where('l.id', $locationId))
             ->groupBy('l.id', 'l.code', 'l.name', 'l.type')
             ->havingRaw('SUM(sm.qty) > 0.001')
-            ->selectRaw('l.code, l.name, l.type, ROUND(SUM(sm.qty), 1) as current_qty')
-            ->orderByDesc('current_qty')
+            ->selectRaw('l.code, l.name, l.type, ROUND(SUM(sm.qty), 1) as received_qty')
+            ->orderByDesc('received_qty')
             ->get();
 
         return ApiResponse::success([
             'period'           => ['from' => $from, 'to' => $to],
             'farmers_supplied' => round($farmers, 1),
             'sold'             => round($sold, 1),
+            'sold_gross'       => round($soldGross, 1),
+            'returned_qty'     => round($returned, 1),
             'stations'         => $stations,
-            'stations_total'   => round($stations->sum('current_qty'), 1),
+            'stations_total'   => round($stations->sum('received_qty'), 1),
             // Visible for reporting/follow-up — never included in
             // farmers_supplied or stations_total, since rejected milk was
             // never accepted into the business.

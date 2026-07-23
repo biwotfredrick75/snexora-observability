@@ -10,6 +10,10 @@ use Illuminate\Support\Facades\DB;
 
 class GraderPayrollController extends Controller
 {
+    // gld_transactions.type code for Close Payroll GL postings — see the
+    // type-code registry note in FarmerSupplierPaymentController.
+    private const GL_TYPE = 51;
+
     // ── Form dropdown data ─────────────────────────────────────────────────────
     public function formData(): JsonResponse
     {
@@ -141,6 +145,7 @@ class GraderPayrollController extends Controller
         $advancesMap = DB::table('grader_advances')
             ->whereIn('grader_id', $graderIds)
             ->whereBetween('advance_date', [$startDate, $endDate])
+            ->where('settled', false)
             ->selectRaw('grader_id, SUM(amount) AS advance_total')
             ->groupBy('grader_id')
             ->pluck('advance_total', 'grader_id');
@@ -266,17 +271,19 @@ class GraderPayrollController extends Controller
         ];
 
         return ApiResponse::success([
-            'graders' => $graders,
-            'totals'  => $totals,
-            'month'   => $month,
-            'year'    => $year,
+            'graders'       => $graders,
+            'totals'        => $totals,
+            'month'         => $month,
+            'year'          => $year,
+            'closed_period' => $this->closedPeriodFor($month, $year, $graderId),
         ], 'Grader payroll processed');
     }
 
     // ── Confirm processing: mark this period's ESP deductions as settled ──────
     //  POST { month, year, grader_id? } — mirrors process(), but persists the
     //  ESP-sale deduction so it isn't pulled into a future period's net_payable.
-    //  (Advances have no equivalent "confirm" step today — out of scope here.)
+    //  (Advances have no equivalent "confirm" step here — see close() below,
+    //  which supersedes this for a full period close including GL posting.)
     public function settle(Request $request): JsonResponse
     {
         $request->validate([
@@ -285,60 +292,218 @@ class GraderPayrollController extends Controller
             'grader_id' => 'nullable|integer|exists:inventory_locations,id',
         ]);
 
-        $result = $this->process($request);
-        $data   = json_decode($result->getContent(), true)['data'] ?? [];
+        $result  = $this->process($request);
+        $data    = json_decode($result->getContent(), true)['data'] ?? [];
         $graders = $data['graders'] ?? [];
 
         $datePaid = now()->toDateString();
         $ref      = sprintf('GRPAY-%04d-%02d', (int) $request->year, (int) $request->month);
 
-        DB::transaction(function () use ($graders, $datePaid, $ref) {
+        DB::transaction(fn () => $this->settleEspAndShortageDeductions($graders, $datePaid, $ref));
+
+        return ApiResponse::success($data, 'Grader payroll settled — ESP and shortage deductions recorded');
+    }
+
+    // ── Close Payroll: full period close ───────────────────────────────────────
+    //  POST { month, year, grader_id? } — settles ESP, shortage-deduction AND
+    //  advance debts for the period, posts a balanced entry to gld_transactions,
+    //  and records a grader_payroll_periods row so this exact (or an
+    //  overlapping) scope can't be closed/posted twice.
+    public function close(Request $request): JsonResponse
+    {
+        $request->validate([
+            'month'     => 'required|integer|between:1,12',
+            'year'      => 'required|integer|min:2000|max:2100',
+            'grader_id' => 'nullable|integer|exists:inventory_locations,id',
+        ]);
+
+        $month    = (int) $request->month;
+        $year     = (int) $request->year;
+        $graderId = $request->grader_id ? (int) $request->grader_id : null;
+
+        if ($this->closedPeriodFor($month, $year, $graderId)) {
+            return ApiResponse::validationError([
+                'month' => ['This grader payroll period is already closed and posted to GL.'],
+            ]);
+        }
+
+        $result  = $this->process($request);
+        $data    = json_decode($result->getContent(), true)['data'] ?? [];
+        $graders = $data['graders'] ?? [];
+        $totals  = $data['totals']  ?? [];
+
+        if (empty($graders)) {
+            return ApiResponse::validationError([
+                'month' => ['Nothing to close — no grader activity found for this period.'],
+            ]);
+        }
+
+        $startDate = sprintf('%04d-%02d-01', $year, $month);
+        $endDate   = date('Y-m-t', strtotime($startDate));
+        $datePaid  = now()->toDateString();
+        $ref       = sprintf('GRPAY-%04d-%02d', $year, $month) . ($graderId ? '-' . $graderId : '');
+        $userId    = $request->user()?->user_id ?? 'system';
+        $userName  = $request->user()?->real_name ?? $userId;
+
+        $period = DB::transaction(function () use (
+            $graders, $totals, $startDate, $endDate, $datePaid, $ref,
+            $month, $year, $graderId, $userId, $userName
+        ) {
+            // ── Settle sub-ledger debts ─────────────────────────────────────
+            $this->settleEspAndShortageDeductions($graders, $datePaid, $ref);
+
             foreach ($graders as $g) {
-                if (($g['esp_deduction'] ?? 0) > 0) {
-                    $remaining = (float) $g['esp_deduction'];
-                    $sales = DB::table('esp_farmer_sales')
-                        ->where('party_type', 'transporter')
-                        ->where('party_id', $g['grader_id'])
-                        ->where('party_deducted', false)
-                        ->where('status', '!=', 'void')
-                        ->orderBy('id')
-                        ->get(['id', 'total_amount']);
-
-                    foreach ($sales as $sale) {
-                        if ($remaining <= 0.005) break;
-                        DB::table('esp_farmer_sales')->where('id', $sale->id)->update([
-                            'party_deducted'     => true,
-                            'party_deducted_at'  => $datePaid,
-                            'party_deducted_ref' => $ref,
-                            'updated_at'         => now(),
-                        ]);
-                        $remaining -= (float) $sale->total_amount;
-                    }
-                }
-
-                if (($g['shortage_deduction'] ?? 0) > 0) {
-                    $remaining = (float) $g['shortage_deduction'];
-                    $deductions = DB::table('grader_deductions')
+                if (($g['advance'] ?? 0) > 0) {
+                    DB::table('grader_advances')
                         ->where('grader_id', $g['grader_id'])
                         ->where('settled', false)
-                        ->orderBy('id')
-                        ->get(['id', 'amount']);
-
-                    foreach ($deductions as $deduction) {
-                        if ($remaining <= 0.005) break;
-                        DB::table('grader_deductions')->where('id', $deduction->id)->update([
+                        ->whereBetween('advance_date', [$startDate, $endDate])
+                        ->update([
                             'settled'     => true,
                             'settled_at'  => $datePaid,
                             'settled_ref' => $ref,
                             'updated_at'  => now(),
                         ]);
-                        $remaining -= (float) $deduction->amount;
-                    }
                 }
             }
+
+            // ── Post to GL ───────────────────────────────────────────────────
+            $glSettings   = DB::table('gl_settings')->first();
+            $expenseCode  = $glSettings->grader_payroll_expense_account     ?? '';
+            $payableCode  = $glSettings->graders_payable_account            ?? '';
+            $advanceCode  = $glSettings->supplier_advance_account           ?? '';
+            $recoveryCode = $glSettings->grader_deductions_recovery_account ?? '';
+
+            $transNo = (DB::table('gld_transactions')
+                ->where('type', self::GL_TYPE)
+                ->lockForUpdate()
+                ->max('trans_no') ?? 0) + 1;
+
+            // Identity: gross_pay + total_balance == net_payable + total_advance
+            //           + total_esp + total_shortage (see process() for the
+            //           per-grader derivation) — so these four lines always balance.
+            $expenseAmt  = round((float) ($totals['gross_pay'] ?? 0) + (float) ($totals['total_balance'] ?? 0), 2);
+            $payableAmt  = round((float) ($totals['net_payable'] ?? 0), 2);
+            $advanceAmt  = round((float) ($totals['total_advance'] ?? 0), 2);
+            $recoveryAmt = round((float) ($totals['total_esp'] ?? 0) + (float) ($totals['total_shortage'] ?? 0), 2);
+
+            $narration = 'Grader payroll — ' . $ref;
+            $line = fn ($code, $amount) => [
+                'trans_no'     => $transNo,
+                'type'         => self::GL_TYPE,
+                'tran_date'    => $datePaid,
+                'account_code' => $code,
+                'reference'    => $ref,
+                'narration'    => $narration,
+                'amount'       => $amount,
+                'created_by'   => $userId,
+                'created_at'   => now(),
+                'updated_at'   => now(),
+            ];
+
+            $glRows = [];
+            if ($expenseCode  && $expenseAmt  > 0) $glRows[] = $line($expenseCode, $expenseAmt);
+            if ($payableCode  && $payableAmt  > 0) $glRows[] = $line($payableCode, -$payableAmt);
+            if ($advanceCode  && $advanceAmt  > 0) $glRows[] = $line($advanceCode, -$advanceAmt);
+            if ($recoveryCode && $recoveryAmt > 0) $glRows[] = $line($recoveryCode, -$recoveryAmt);
+
+            if (!empty($glRows)) {
+                DB::table('gld_transactions')->insert($glRows);
+            }
+
+            // ── Persist the close/period record ────────────────────────────
+            $periodId = DB::table('grader_payroll_periods')->insertGetId([
+                'month'          => $month,
+                'year'           => $year,
+                'grader_id'      => $graderId,
+                'reference'      => $ref,
+                'total_gross'    => $totals['gross_pay']      ?? 0,
+                'total_advance'  => $totals['total_advance']  ?? 0,
+                'total_esp'      => $totals['total_esp']      ?? 0,
+                'total_shortage' => $totals['total_shortage'] ?? 0,
+                'total_balance'  => $totals['total_balance']  ?? 0,
+                'net_payable'    => $totals['net_payable']    ?? 0,
+                'gl_trans_no'    => $transNo,
+                'posted_by'      => $userName,
+                'posted_at'      => now(),
+                'created_at'     => now(),
+                'updated_at'     => now(),
+            ]);
+
+            return DB::table('grader_payroll_periods')->where('id', $periodId)->first();
         });
 
-        return ApiResponse::success($data, 'Grader payroll settled — ESP and shortage deductions recorded');
+        return ApiResponse::success([
+            'period'  => $period,
+            'graders' => $graders,
+            'totals'  => $totals,
+        ], 'Grader payroll closed — GL posted and advances/ESP/shortage deductions settled');
+    }
+
+    // ── Shared ESP + shortage-deduction settlement (used by settle() & close()) ─
+    private function settleEspAndShortageDeductions(array $graders, string $datePaid, string $ref): void
+    {
+        foreach ($graders as $g) {
+            if (($g['esp_deduction'] ?? 0) > 0) {
+                $remaining = (float) $g['esp_deduction'];
+                $sales = DB::table('esp_farmer_sales')
+                    ->where('party_type', 'transporter')
+                    ->where('party_id', $g['grader_id'])
+                    ->where('party_deducted', false)
+                    ->where('status', '!=', 'void')
+                    ->orderBy('id')
+                    ->get(['id', 'total_amount']);
+
+                foreach ($sales as $sale) {
+                    if ($remaining <= 0.005) break;
+                    DB::table('esp_farmer_sales')->where('id', $sale->id)->update([
+                        'party_deducted'     => true,
+                        'party_deducted_at'  => $datePaid,
+                        'party_deducted_ref' => $ref,
+                        'updated_at'         => now(),
+                    ]);
+                    $remaining -= (float) $sale->total_amount;
+                }
+            }
+
+            if (($g['shortage_deduction'] ?? 0) > 0) {
+                $remaining = (float) $g['shortage_deduction'];
+                $deductions = DB::table('grader_deductions')
+                    ->where('grader_id', $g['grader_id'])
+                    ->where('settled', false)
+                    ->orderBy('id')
+                    ->get(['id', 'amount']);
+
+                foreach ($deductions as $deduction) {
+                    if ($remaining <= 0.005) break;
+                    DB::table('grader_deductions')->where('id', $deduction->id)->update([
+                        'settled'     => true,
+                        'settled_at'  => $datePaid,
+                        'settled_ref' => $ref,
+                        'updated_at'  => now(),
+                    ]);
+                    $remaining -= (float) $deduction->amount;
+                }
+            }
+        }
+    }
+
+    // ── Find a grader_payroll_periods row covering (or overlapping) the given
+    // scope. A specific-grader request is blocked/flagged by either a matching
+    // per-grader close OR a prior "all graders" close; an "all graders"
+    // request is blocked/flagged by ANY existing row for that month/year,
+    // since it would otherwise double-post graders already closed individually.
+    private function closedPeriodFor(int $month, int $year, ?int $graderId)
+    {
+        $query = DB::table('grader_payroll_periods')->where('month', $month)->where('year', $year);
+
+        if ($graderId) {
+            $query->where(function ($q) use ($graderId) {
+                $q->where('grader_id', $graderId)->orWhereNull('grader_id');
+            });
+        }
+
+        return $query->orderByDesc('id')->first();
     }
 
     // ── Record advance to a grader ─────────────────────────────────────────────

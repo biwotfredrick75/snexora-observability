@@ -1301,6 +1301,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('grader-payroll/form-data',   [GraderPayrollController::class, 'formData']);
         Route::post('grader-payroll/process',    [GraderPayrollController::class, 'process']);
         Route::post('grader-payroll/settle',     [GraderPayrollController::class, 'settle']);
+        Route::post('grader-payroll/close',      [GraderPayrollController::class, 'close']);
         Route::post('grader-payroll/advances',   [GraderPayrollController::class, 'storeAdvance']);
         Route::post('grader-payroll/rates',      [GraderPayrollController::class, 'saveRate']);
 

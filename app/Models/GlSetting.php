@@ -50,6 +50,10 @@ class GlSetting extends Model
         'farmers_payable_account',
         'farmers_bank_account',
         'default_tare_kg',
+        // Grader Payroll Defaults
+        'grader_payroll_expense_account',
+        'graders_payable_account',
+        'grader_deductions_recovery_account',
         // SACCO Defaults
         'sacco_savings_liability_account',
         'sacco_share_capital_account',

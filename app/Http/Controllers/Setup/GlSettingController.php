@@ -69,6 +69,10 @@ class GlSettingController extends Controller
             'farmers_payable_account'         => 'sometimes|nullable|string|max:20',
             'farmers_bank_account'            => 'sometimes|nullable|string|max:20',
             'default_tare_kg'                 => 'sometimes|numeric|min:0',
+            // Grader Payroll Defaults
+            'grader_payroll_expense_account'      => 'sometimes|nullable|string|max:20',
+            'graders_payable_account'             => 'sometimes|nullable|string|max:20',
+            'grader_deductions_recovery_account'  => 'sometimes|nullable|string|max:20',
             // SACCO Defaults
             'sacco_savings_liability_account'     => 'sometimes|nullable|string|max:20',
             'sacco_share_capital_account'         => 'sometimes|nullable|string|max:20',
