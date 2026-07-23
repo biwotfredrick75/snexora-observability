@@ -7,6 +7,7 @@ use App\Http\Responses\ApiResponse;
 use App\Models\CheckoffService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class CheckoffServiceController extends Controller
 {
@@ -22,8 +23,12 @@ class CheckoffServiceController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'gl_account'   => 'nullable|string|max:50',
-            'service_type' => 'required|in:Deduction,Claim',
+            // A Deduction service is credited to gl_account when a farmer
+            // payment batch posts it (ProcessFarmerPaymentsBatch) — leaving
+            // it unset silently falls back to a generic bank/misc deduction
+            // line instead of the right account, so require it up front.
+            'gl_account'   => ['nullable', 'string', 'max:50', Rule::requiredIf(fn () => $request->input('service_type') === 'Deduction')],
+            'service_type' => 'required|in:Deduction,Earning',
             'service_name' => 'required|string|max:150',
             'active'       => 'sometimes|boolean',
         ]);
@@ -35,8 +40,8 @@ class CheckoffServiceController extends Controller
     {
         $service = CheckoffService::findOrFail($id);
         $data    = $request->validate([
-            'gl_account'   => 'nullable|string|max:50',
-            'service_type' => 'sometimes|in:Deduction,Claim',
+            'gl_account'   => ['nullable', 'string', 'max:50', Rule::requiredIf(fn () => $request->input('service_type', $service->service_type) === 'Deduction')],
+            'service_type' => 'sometimes|in:Deduction,Earning',
             'service_name' => 'sometimes|string|max:150',
             'active'       => 'sometimes|boolean',
         ]);

@@ -25,7 +25,7 @@ class InventoryLocationController extends Controller
         return ApiResponse::success($query->get(), 'Inventory locations retrieved');
     }
 
-    public function store(Request $request): JsonResponse
+     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'code'          => 'required|string|max:20|unique:inventory_locations,code',
@@ -37,15 +37,18 @@ class InventoryLocationController extends Controller
             'fax'           => 'nullable|string|max:30',
             'email'         => 'nullable|email|max:100',
             'till_no'       => 'nullable|string|max:50',
-            'price_list'    => 'nullable|string|max:100',
+            'default_price_list'    => 'nullable|string|max:100',
             'drive_name'    => 'nullable|string|max:100',
             'returns_store' => 'boolean',
             'loading_order' => 'boolean',
         ]);
+                 if (array_key_exists('default_price_list', $validated)) {
+    $validated['price_list'] = $validated['default_price_list'];
+    unset($validated['default_price_list']);
+}
         $location = InventoryLocation::create($validated);
         return ApiResponse::created($location, 'Inventory location created');
     }
-
     public function update(Request $request, int $id): JsonResponse
     {
         $location = InventoryLocation::findOrFail($id);
@@ -59,15 +62,21 @@ class InventoryLocationController extends Controller
             'fax'           => 'nullable|string|max:30',
             'email'         => 'nullable|email|max:100',
             'till_no'       => 'nullable|string|max:50',
-            'price_list'    => 'nullable|string|max:100',
+            'default_price_list'    => 'nullable|string|max:100',
             'drive_name'    => 'nullable|string|max:100',
             'returns_store' => 'sometimes|boolean',
             'loading_order' => 'sometimes|boolean',
             'inactive'      => 'sometimes|boolean',
         ]);
+    if (array_key_exists('default_price_list', $validated)) {
+        $validated['price_list'] = $validated['default_price_list'];
+        unset($validated['default_price_list']);
+    }
         $location->fill($validated)->save();
+
         return ApiResponse::updated($location->fresh(), 'Inventory location updated');
     }
+
 
     public function destroy(int $id): JsonResponse
     {

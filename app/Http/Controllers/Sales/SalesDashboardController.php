@@ -576,6 +576,24 @@ class SalesDashboardController extends Controller
         $stationsCollected   = $stationsQuery(25);
         $stationsTransferred = $stationsQuery(13);
 
+        // On-hand — lifetime running balance per location as of the end of
+        // the period ($to), not scoped to $from like the qty above. Lets the
+        // Transferred-in list show what's actually sitting at each station
+        // right now, alongside how much arrived there this period.
+        $onHandByCode = DB::table('stock_movements as sm')
+            ->join('inventory_locations as l', 'l.code', '=', 'sm.loc_code')
+            ->where('sm.stock_id', $rawMilkStockId)
+            ->where('sm.tran_date', '<=', $to)
+            ->whereIn('l.code', $stationsTransferred->pluck('code'))
+            ->groupBy('l.code')
+            ->selectRaw('l.code, ROUND(SUM(sm.qty), 1) as on_hand')
+            ->pluck('on_hand', 'code');
+
+        $stationsTransferred = $stationsTransferred->map(function ($row) use ($onHandByCode) {
+            $row->on_hand = (float) ($onHandByCode[$row->code] ?? 0);
+            return $row;
+        });
+
         return ApiResponse::success([
             'period'                     => ['from' => $from, 'to' => $to],
             'farmers_supplied'           => round($farmers, 1),

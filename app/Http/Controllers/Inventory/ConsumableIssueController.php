@@ -19,7 +19,7 @@ class ConsumableIssueController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = ConsumableIssue::with('items')->orderBy('date', 'desc')->orderBy('id', 'desc');
+        $query = ConsumableIssue::with('items', 'reason')->orderBy('date', 'desc')->orderBy('id', 'desc');
 
         if ($request->filled('status')) {
             $query->where('status', $request->status);
@@ -33,7 +33,7 @@ class ConsumableIssueController extends Controller
 
     public function show(int $id): JsonResponse
     {
-        $issue = ConsumableIssue::with('items.item')->findOrFail($id);
+        $issue = ConsumableIssue::with('items.item', 'reason')->findOrFail($id);
         $data  = $issue->toArray();
 
         if ($issue->status === 'approved') {
@@ -51,12 +51,13 @@ class ConsumableIssueController extends Controller
     {
         $validated = $request->validate([
             'from_location_id' => 'required|string|max:30',
+            'to_location_id'   => 'nullable|string|max:30',
             'vehicle'          => 'nullable|string|max:50',
             'shift'            => 'nullable|string|max:20',
             'date'             => ['required', 'date', new \App\Rules\WithinFiscalYear],
             'dimension_id'     => 'nullable|integer',
             'dimension2_id'    => 'nullable|integer',
-            'gl_account'       => 'required|string|max:15',
+            'reason_id'        => 'required|integer|exists:adjustment_reasons,id',
             'memo'             => 'nullable|string',
             'items'            => 'required|array|min:1',
             'items.*.stock_id' => 'required|string|max:20',
@@ -90,12 +91,13 @@ class ConsumableIssueController extends Controller
 
         $validated = $request->validate([
             'from_location_id' => 'sometimes|string|max:30',
+            'to_location_id'   => 'nullable|string|max:30',
             'vehicle'          => 'nullable|string|max:50',
             'shift'            => 'nullable|string|max:20',
             'date'             => ['sometimes', 'date', new \App\Rules\WithinFiscalYear],
             'dimension_id'     => 'nullable|integer',
             'dimension2_id'    => 'nullable|integer',
-            'gl_account'       => 'nullable|string|max:15',
+            'reason_id'        => 'sometimes|integer|exists:adjustment_reasons,id',
             'memo'             => 'nullable|string',
             'items'            => 'sometimes|array|min:1',
             'items.*.stock_id' => 'required_with:items|string|max:20',
@@ -126,21 +128,50 @@ class ConsumableIssueController extends Controller
         return ApiResponse::updated($issue->fresh(), 'Issue submitted for approval');
     }
 
-    public function approve(int $id): JsonResponse
+    // ── Stage 2: Finance Approval ────────────────────────────────────────────
+    // Sign-off only — no stock movement or GL posting happens here. This just
+    // clears the requisition to move on to the store's physical issue step.
+    public function financeApprove(int $id): JsonResponse
     {
-        $issue = ConsumableIssue::with('items.item')->findOrFail($id);
+        $issue = ConsumableIssue::findOrFail($id);
 
         if ($issue->status !== 'pending') {
-            return ApiResponse::error('Issue is not pending approval', 422);
+            return ApiResponse::error('Issue is not pending finance approval', 422);
         }
-        if (!$issue->gl_account) {
-            return ApiResponse::error('A GL account must be set on this issue before approving', 422);
+        if (!$issue->reason_id) {
+            return ApiResponse::error('A reason code must be set on this issue before approving', 422);
+        }
+
+        $issue->update([
+            'status'              => 'finance_approved',
+            'finance_approved_by' => Auth::user()?->user_id ?? '',
+            'finance_approved_at' => now(),
+        ]);
+
+        return ApiResponse::updated($issue->fresh(), 'Issue approved by Finance — ready for store issue');
+    }
+
+    // ── Stage 3: Store Approve & Issue ───────────────────────────────────────
+    // The physical stock movement and GL double entry happen here, once
+    // Finance has already signed off — mirrors the reference workflow where
+    // "Store Approve & Issue" is the next stage after "Pending Finance Approval".
+    public function issue(int $id): JsonResponse
+    {
+        $issue = ConsumableIssue::with('items.item', 'reason')->findOrFail($id);
+
+        if ($issue->status !== 'finance_approved') {
+            return ApiResponse::error('Issue has not been approved by Finance yet', 422);
+        }
+
+        $reasonGl = $issue->reason?->gl_account ?? $issue->gl_account;
+        if (!$reasonGl) {
+            return ApiResponse::error('The reason code for this issue has no GL account configured', 422);
         }
 
         $shortfalls = [];
 
         try {
-            DB::transaction(function () use ($issue, &$shortfalls) {
+            DB::transaction(function () use ($issue, $reasonGl, &$shortfalls) {
                 $approver = Auth::user()?->user_id ?? '';
 
                 // ── 1. Stock availability check ───────────────────────────────
@@ -161,7 +192,7 @@ class ConsumableIssueController extends Controller
                     throw new \RuntimeException('insufficient_stock');
                 }
 
-                // ── 2. Mark approved ──────────────────────────────────────────
+                // ── 2. Mark issued ──────────────────────────────────────────
                 $issue->update([
                     'status'      => 'approved',
                     'approved_by' => $approver,
@@ -174,6 +205,9 @@ class ConsumableIssueController extends Controller
                     );
                     $lineAmount    = round($awp * abs($lineItem->quantity), 4);
                     $inventoryGl   = $lineItem->item?->inventory_account ?? '';
+                    // Item-level override wins over the reason's default
+                    // expense account — same precedence InventoryAdjustment uses.
+                    $expenseGl     = $lineItem->item?->adjustment_account ?: $reasonGl;
 
                     // Stock movement — decrease consumed stock (negative qty)
                     StockMovementService::record([
@@ -197,8 +231,8 @@ class ConsumableIssueController extends Controller
                             transNo:       $issue->id,
                             type:          StockMovement::TYPE_CONSUMABLE,
                             date:          $issue->date,
-                            debitAccount:  $issue->gl_account,   // expense account — DEBIT
-                            creditAccount: $inventoryGl,         // inventory account — CREDIT
+                            debitAccount:  $expenseGl,    // expense account — DEBIT
+                            creditAccount: $inventoryGl,  // inventory account — CREDIT
                             amount:        $lineAmount,
                             reference:     $issue->reference,
                             narration:     $issue->memo ?? 'Consumable issue ' . $issue->reference,
@@ -225,20 +259,20 @@ class ConsumableIssueController extends Controller
             throw $e;
         }
 
-        $fresh = $issue->fresh()->load('items.item')->toArray();
+        $fresh = $issue->fresh()->load('items.item', 'reason')->toArray();
         $fresh['gl_entries'] = GldTransaction::where('trans_no', $id)
             ->where('type', StockMovement::TYPE_CONSUMABLE)
             ->orderByDesc('amount')
             ->get(['account_code', 'narration', 'amount']);
 
-        return ApiResponse::updated($fresh, 'Issue approved');
+        return ApiResponse::updated($fresh, 'Issue posted — stock and GL updated');
     }
 
     public function reject(int $id): JsonResponse
     {
         $issue = ConsumableIssue::findOrFail($id);
-        if ($issue->status !== 'pending') {
-            return ApiResponse::error('Issue is not pending approval', 422);
+        if (!in_array($issue->status, ['pending', 'finance_approved'], true)) {
+            return ApiResponse::error('Issue is not awaiting approval', 422);
         }
         $issue->update([
             'status'      => 'rejected',

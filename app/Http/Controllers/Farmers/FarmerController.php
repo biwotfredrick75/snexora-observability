@@ -140,9 +140,9 @@ class FarmerController extends Controller
     {
         $q = trim($request->get('q', ''));
         $query = Farmer::orderBy('full_name');
-        if ($request->filled('status')) {
+        if ($request->filled('status') && $request->status !== 'all') {
             $query->where('status', $request->status);
-        } else {
+        } elseif (!$request->filled('status')) {
             $query->where('status', 'active');
         }
 

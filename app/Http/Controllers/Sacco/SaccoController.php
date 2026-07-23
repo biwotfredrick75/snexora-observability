@@ -504,7 +504,7 @@ class SaccoController extends Controller
         if (! $serviceId) {
             $serviceId = DB::table('checkoff_services')->insertGetId([
                 'service_name' => 'SACCO Loan Repayment',
-                'service_type' => 'sacco_loan',
+                'service_type' => 'Deduction',
                 'active'       => true,
                 'created_at'   => now(),
                 'updated_at'   => now(),

@@ -36,9 +36,10 @@ class GraderPayrollController extends Controller
             ]);
 
         $salesTypes = DB::table('sales_types')->orderBy('type_name')->get(['id', 'type_name']);
+        $company    = DB::table('company_preferences')->first(['name', 'phone', 'email', 'logo_filename']);
 
         return ApiResponse::success(
-            compact('graders', 'pricingRows', 'salesTypes', 'rawMilkId'),
+            compact('graders', 'pricingRows', 'salesTypes', 'rawMilkId', 'company'),
             'Form data'
         );
     }

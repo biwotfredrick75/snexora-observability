@@ -58,6 +58,18 @@ class FarmerPaymentController extends Controller
         $routeId    = $request->route_id;
         $termId     = $request->payment_term_id;
 
+        // This is a preview — always loads the data regardless. But if a
+        // real settlement already closed this month (see
+        // FarmerPaymentProcessController::monthClosedBatch), flag it so the
+        // UI can tell the office they're looking at an already-posted
+        // period rather than one still open for processing.
+        $closedBatch = DB::table('farmer_payment_batches')
+            ->where('month', $month)
+            ->where('year', $year)
+            ->where('locked', true)
+            ->orderByDesc('id')
+            ->first(['id', 'reference', 'completed_at']);
+
         // Date range (index-friendly — avoids MONTH()/YEAR() full scan)
         $startDate = sprintf('%04d-%02d-01', $year, $month);
         $endDate   = date('Y-m-t', strtotime($startDate)); // last day of month
@@ -117,11 +129,13 @@ class FarmerPaymentController extends Controller
 
         if ($milkRows->isEmpty()) {
             return ApiResponse::success([
-                'farmers'  => [],
-                'services' => [],
-                'totals'   => $this->emptyTotals(),
-                'month'    => $month,
-                'year'     => $year,
+                'farmers'      => [],
+                'services'     => [],
+                'totals'       => $this->emptyTotals(),
+                'month'        => $month,
+                'year'         => $year,
+                'closed'       => $closedBatch !== null,
+                'closed_batch' => $closedBatch,
             ], 'No milk collection data found for the selected period');
         }
 
@@ -304,12 +318,16 @@ class FarmerPaymentController extends Controller
         }
 
         return ApiResponse::success([
-            'farmers'  => $farmers,
-            'services' => $services,
-            'totals'   => $totals,
-            'month'    => $month,
-            'year'     => $year,
-        ], 'Payment data loaded');
+            'farmers'      => $farmers,
+            'services'     => $services,
+            'totals'       => $totals,
+            'month'        => $month,
+            'year'         => $year,
+            'closed'       => $closedBatch !== null,
+            'closed_batch' => $closedBatch,
+        ], $closedBatch !== null
+            ? 'Payment data loaded — this period is already closed and posted'
+            : 'Payment data loaded');
     }
 
     // ── Save / upsert checkoff entries for a batch of farmers ─────────────────

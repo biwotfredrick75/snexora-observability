@@ -660,9 +660,10 @@ Route::middleware('auth:api')->group(function () {
         Route::post('consumable-issues',             [ConsumableIssueController::class, 'store']);
         Route::get('consumable-issues/{id}',         [ConsumableIssueController::class, 'show']);
         Route::put('consumable-issues/{id}',         [ConsumableIssueController::class, 'update']);
-        Route::post('consumable-issues/{id}/submit', [ConsumableIssueController::class, 'submit']);
-        Route::post('consumable-issues/{id}/approve',[ConsumableIssueController::class, 'approve']);
-        Route::post('consumable-issues/{id}/reject', [ConsumableIssueController::class, 'reject']);
+        Route::post('consumable-issues/{id}/submit',         [ConsumableIssueController::class, 'submit']);
+        Route::post('consumable-issues/{id}/finance-approve',[ConsumableIssueController::class, 'financeApprove']);
+        Route::post('consumable-issues/{id}/issue',          [ConsumableIssueController::class, 'issue']);
+        Route::post('consumable-issues/{id}/reject',         [ConsumableIssueController::class, 'reject']);
         Route::delete('consumable-issues/{id}',      [ConsumableIssueController::class, 'destroy']);
 
         // Stock Takes
@@ -1331,6 +1332,10 @@ Route::middleware('auth:api')->group(function () {
         // Milk Supplier Payslips
         Route::get('milk-payslips/form-data', [\App\Http\Controllers\Farmers\MilkPayslipController::class, 'formData']);
         Route::get('milk-payslips',           [\App\Http\Controllers\Farmers\MilkPayslipController::class, 'payslips']);
+
+        // SACCO Bank Schedule — recovered loan repayments & other deductions
+        Route::get('sacco-bank-schedule/form-data', [\App\Http\Controllers\Farmers\SaccoBankScheduleController::class, 'formData']);
+        Route::get('sacco-bank-schedule',           [\App\Http\Controllers\Farmers\SaccoBankScheduleController::class, 'schedule']);
 
         // Route / Grader Milk Transfers
         Route::get('route-grader-transfers/form-data', [\App\Http\Controllers\Farmers\RouteGraderTransferController::class, 'formData']);

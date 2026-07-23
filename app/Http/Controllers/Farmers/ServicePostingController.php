@@ -11,17 +11,30 @@ use Illuminate\Support\Facades\DB;
 class ServicePostingController extends Controller
 {
     // ── Form dropdowns ────────────────────────────────────────────────────────
-    public function formData(): JsonResponse
+    //  farmers is search-driven (there are 16,000+ active farmers — loading
+    //  them all unpaginated stalls the dropdown) — same pattern as
+    //  FarmerSupplierPaymentController::formData().
+    public function formData(Request $request): JsonResponse
     {
+        $search = $request->input('search', '');
+        $farmersQuery = DB::table('farmers')
+            ->where('status', 'active')
+            ->orderBy('full_name');
+
+        if ($search) {
+            $farmersQuery->where(function ($q) use ($search) {
+                $q->where('full_name', 'like', "%{$search}%")
+                  ->orWhere('farmer_no', 'like', "%{$search}%")
+                  ->orWhere('member_no', 'like', "%{$search}%");
+            });
+        }
+
         return ApiResponse::success([
             'services' => DB::table('checkoff_services')
                 ->where('active', true)
                 ->orderBy('service_name')
                 ->get(['id', 'service_name', 'service_type', 'gl_account']),
-            'farmers' => DB::table('farmers')
-                ->where('status', 'active')
-                ->orderBy('full_name')
-                ->get(['id', 'farmer_no', 'member_no', 'full_name']),
+            'farmers' => $farmersQuery->limit(100)->get(['id', 'farmer_no', 'member_no', 'full_name']),
         ], 'Form data retrieved');
     }
 
@@ -42,6 +55,9 @@ class ServicePostingController extends Controller
                 'fce.amount',
                 'fce.note',
                 'fce.created_at',
+                'fce.deducted',
+                'fce.deducted_at',
+                'fce.deducted_ref',
             ])
             ->orderByDesc('fce.year')
             ->orderByDesc('fce.month')
@@ -71,6 +87,17 @@ class ServicePostingController extends Controller
             'note'       => 'nullable|string|max:255',
         ]);
 
+        // A Deduction posting has to land on a GL account when the payment
+        // batch processes it (see ProcessFarmerPaymentsBatch) — block the
+        // posting at the source rather than let it silently fall through to
+        // a generic bank/misc deduction line.
+        $service = DB::table('checkoff_services')->where('id', $data['service_id'])->first();
+        if ($service && $service->service_type === 'Deduction' && empty($service->gl_account)) {
+            return ApiResponse::validationError([
+                'service_id' => ["\"{$service->service_name}\" has no GL account configured — set one in Farmer Check-off Services before posting deductions against it."],
+            ]);
+        }
+
         $date  = \Carbon\Carbon::parse($data['date']);
         $month = (int) $date->format('n');
         $year  = (int) $date->format('Y');
@@ -98,6 +125,7 @@ class ServicePostingController extends Controller
                 DB::raw("COALESCE(cs.service_name, fce.service_name, '—') as service_name"),
                 'cs.service_type',
                 'fce.amount', 'fce.note',
+                'fce.deducted', 'fce.deducted_at', 'fce.deducted_ref',
             ])
             ->first();
 
@@ -105,12 +133,24 @@ class ServicePostingController extends Controller
     }
 
     // ── Delete a single entry ─────────────────────────────────────────────────
+    //  Refuses to delete an entry a farmer payment batch has already
+    //  processed (deducted=true) — it's been netted off gross pay and posted
+    //  to GL by then (ProcessFarmerPaymentsBatch), so deleting it here would
+    //  silently desync the ledger from what was actually paid.
     public function destroy(int $id): JsonResponse
     {
-        $deleted = DB::table('farmer_checkoff_entries')->where('id', $id)->delete();
-        if (! $deleted) {
+        $entry = DB::table('farmer_checkoff_entries')->where('id', $id)->first();
+        if (! $entry) {
             return ApiResponse::notFound('Entry not found');
         }
+        if ($entry->deducted) {
+            $ref = $entry->deducted_ref ? " (ref {$entry->deducted_ref})" : '';
+            return ApiResponse::validationError([
+                'id' => ["This posting has already been processed{$ref} and cannot be deleted."],
+            ]);
+        }
+
+        DB::table('farmer_checkoff_entries')->where('id', $id)->delete();
         return ApiResponse::deleted('Service posting deleted');
     }
 
