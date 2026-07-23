@@ -549,17 +549,19 @@ class SalesDashboardController extends Controller
 
         $sold = max(0.0, $soldGross - $returned);
 
-        // Stations — milk collected (GRN receipt, type=25) and transferred
-        // in (type=13, receiving side only — dispatches are recorded as a
-        // negative qty at the source and excluded here) per location, for
-        // the selected period. Deliberately inbound-only: this answers
-        // "how much reached this station in the period", not a running
-        // balance — a station's total on-hand can differ (also reflects
-        // what left via sales/consumption/dispatch and stock from before
-        // $from).
-        $stations = DB::table('stock_movements as sm')
+        // Stations — split by movement stage so the totals don't double-count
+        // the same litres as they change hands: milk is first collected at a
+        // grader/station (GRN receipt, type=25 — this is the same source data
+        // as farmers_supplied) and MAY subsequently be transferred on to
+        // another location (type=13, receiving side only — dispatches are
+        // recorded as a negative qty at the source and excluded here). A
+        // station's total on-hand can still differ from either figure (also
+        // reflects what left via sales/consumption/dispatch and stock from
+        // before $from) — these are period movement totals, not a balance.
+        $stationsQuery = fn ($type) => DB::table('stock_movements as sm')
             ->join('inventory_locations as l', 'l.code', '=', 'sm.loc_code')
             ->where('sm.stock_id', $rawMilkStockId)
+            ->where('sm.type', $type)
             ->where('sm.qty', '>', 0)
             ->whereBetween('sm.tran_date', [$from, $to])
             ->where('l.inactive', 0)
@@ -567,18 +569,23 @@ class SalesDashboardController extends Controller
             ->when($locationId, fn ($q) => $q->where('l.id', $locationId))
             ->groupBy('l.id', 'l.code', 'l.name', 'l.type')
             ->havingRaw('SUM(sm.qty) > 0.001')
-            ->selectRaw('l.code, l.name, l.type, ROUND(SUM(sm.qty), 1) as received_qty')
-            ->orderByDesc('received_qty')
+            ->selectRaw('l.code, l.name, l.type, ROUND(SUM(sm.qty), 1) as qty')
+            ->orderByDesc('qty')
             ->get();
 
+        $stationsCollected   = $stationsQuery(25);
+        $stationsTransferred = $stationsQuery(13);
+
         return ApiResponse::success([
-            'period'           => ['from' => $from, 'to' => $to],
-            'farmers_supplied' => round($farmers, 1),
-            'sold'             => round($sold, 1),
-            'sold_gross'       => round($soldGross, 1),
-            'returned_qty'     => round($returned, 1),
-            'stations'         => $stations,
-            'stations_total'   => round($stations->sum('received_qty'), 1),
+            'period'                     => ['from' => $from, 'to' => $to],
+            'farmers_supplied'           => round($farmers, 1),
+            'sold'                       => round($sold, 1),
+            'sold_gross'                 => round($soldGross, 1),
+            'returned_qty'               => round($returned, 1),
+            'stations_collected'         => $stationsCollected,
+            'stations_collected_total'   => round($stationsCollected->sum('qty'), 1),
+            'stations_transferred'       => $stationsTransferred,
+            'stations_transferred_total' => round($stationsTransferred->sum('qty'), 1),
             // Visible for reporting/follow-up — never included in
             // farmers_supplied or stations_total, since rejected milk was
             // never accepted into the business.
