@@ -1,4 +1,5 @@
 <?php
+use App\Http\Controllers\Internal\AlertWebhookController;
 use App\Http\Controllers\Internal\BulkApprovalCallbackController;
 use App\Http\Controllers\Payroll\PayrollController;
 use Illuminate\Support\Facades\Route;
@@ -1737,6 +1738,9 @@ Route::middleware('auth:api')->prefix('payroll')->group(function () {
 
 // ── Internal service callbacks (HMAC-authenticated, no Bearer token) ──────────
 Route::post('internal/bulk-approval-result', BulkApprovalCallbackController::class);
+
+// ── SigNoz alert webhook (bearer token via config('alerts.webhook_token')) ────
+Route::post('alerts/nexora-alerts', AlertWebhookController::class);
 
 // ── Payment provider webhooks (no Bearer token — Safaricom can't send one) ────
 // Keep this URL out of anything a customer-facing client calls; restrict at the

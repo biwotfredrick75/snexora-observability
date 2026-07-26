@@ -1,0 +1,42 @@
+# cast.yaml.lock — pinned versions for the nexora telemetry gateway
+#
+# cast.yaml itself is env-driven and never changes between environments;
+# this file pins the actual binary/image versions that implement it, so a
+# fresh deploy reproduces the same collector build rather than whatever
+# "latest" happens to resolve to. Mirrors the exact versions confirmed
+# running in both environments as of 2026-07-26.
+
+collector:
+  distribution: otelcol-contrib
+  version: 0.108.1
+  # local dev: otel/opentelemetry-collector-contrib:0.108.1 (Docker, nexora-infrastructure/otel-collector-compose.yaml)
+  # production: static binary at /home/fred/cast-collector/otelcol-contrib on the
+  #             DigitalOcean droplet (64.23.134.94), run via systemd unit
+  #             cast-collector.service — no Docker on that host.
+
+signoz:
+  version: 0.134.0
+  architecture: unified-single-binary   # "ee":"Y" in /api/v1/version
+  datastore: clickhouse
+  containers:
+    - signoz-signoz-0        # UI + API, :8081
+    - signoz-ingester-1      # OTel ingester, :4317 (grpc) / :4318 (http)
+    - signoz-telemetrystore-clickhouse-0-0
+
+instrumentation:
+  # go.opentelemetry.io module versions, pinned to match go.sum in each
+  # Go service (nexora-sacco, nexora-etims) at the point telemetry was
+  # verified end-to-end.
+  otelgin: go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin
+  php_sdk:
+    open-telemetry/sdk: 1.15.0
+    open-telemetry/exporter-otlp: 1.4.0
+
+transport:
+  # production -> local SigNoz, since SigNoz itself is not internet-facing
+  mechanism: reverse-ssh-tunnel
+  local_endpoint: 127.0.0.1:14317
+  tunnel_unit: cast-tunnel.service   # systemd --user, this machine
+  remote_unit: cast-collector.service # systemd, droplet (root)
+
+verified: 2026-07-26
