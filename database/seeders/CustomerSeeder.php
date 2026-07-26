@@ -42,6 +42,10 @@ class CustomerSeeder extends Seeder
 
     public function run(): void
     {
+        if (DB::table('customers')->count() > 0) {
+            return;
+        }
+
         // Fetch existing FK values to use (or null if tables are empty)
         $paymentTermIds    = DB::table('payment_terms')->pluck('id')->toArray();
         $salesTypeIds      = DB::table('sales_types')->pluck('id')->toArray();
@@ -50,7 +54,7 @@ class CustomerSeeder extends Seeder
         $customers = [];
         $now = now()->toDateTimeString();
 
-        for ($i = 1; $i <= 150; $i++) {
+        for ($i = 1; $i <= 10; $i++) {
             $first    = self::$FIRST_NAMES[array_rand(self::$FIRST_NAMES)];
             $last     = self::$LAST_NAMES[array_rand(self::$LAST_NAMES)];
             $town     = self::$TOWNS[array_rand(self::$TOWNS)];
@@ -103,6 +107,6 @@ class CustomerSeeder extends Seeder
             DB::table('customers')->insert($chunk);
         }
 
-        $this->command->info('Seeded 150 customers.');
+        $this->command->info('Seeded ' . count($customers) . ' customers.');
     }
 }

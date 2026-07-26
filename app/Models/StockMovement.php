@@ -17,6 +17,7 @@ class StockMovement extends Model
     const TYPE_CREDIT_NOTE = 11;  // credit note (reversal of invoice)
     const TYPE_DEBIT_NOTE  = 12;  // customer debit note (supplementary charge — increases receivable)
     const TYPE_SUPPLIER_DEBIT_NOTE = 27; // supplier debit note (increases payable)
+    const TYPE_PACK_CONVERSION     = 42; // bulk item repacked into pack-size SKUs (item_conversion_items)
     // SACCO module — gld_transactions only (no stock movement involved)
     const TYPE_SACCO_SHARE_PURCHASE     = 30;
     const TYPE_SACCO_SAVINGS_DEPOSIT    = 31;

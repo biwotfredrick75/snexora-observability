@@ -64,8 +64,8 @@ class WorkOrderController extends Controller
             'unit'                => 'nullable|string|max:20',
             'start_date'          => 'required|date',
             'due_date'            => 'required|date|after_or_equal:start_date',
-            'location_code'       => 'nullable|string|max:20',
-            'output_location_code'=> 'nullable|string|max:20',
+            'location_code'       => 'nullable|string|max:20|exists:inventory_locations,code',
+            'output_location_code'=> 'nullable|string|max:20|exists:inventory_locations,code',
             'notes'               => 'nullable|string',
         ]);
 
@@ -123,8 +123,8 @@ class WorkOrderController extends Controller
             'unit'                => 'nullable|string|max:20',
             'start_date'          => 'required|date',
             'due_date'            => 'required|date|after_or_equal:start_date',
-            'location_code'       => 'nullable|string|max:20',
-            'output_location_code'=> 'nullable|string|max:20',
+            'location_code'       => 'nullable|string|max:20|exists:inventory_locations,code',
+            'output_location_code'=> 'nullable|string|max:20|exists:inventory_locations,code',
             'notes'               => 'nullable|string',
         ]);
 
@@ -211,7 +211,7 @@ class WorkOrderController extends Controller
             'byproducts.*.stock_id'   => 'required_with:byproducts|string|exists:items,stock_id',
             'byproducts.*.qty'        => 'required_with:byproducts|numeric|min:0.0001',
             'byproducts.*.unit'       => 'nullable|string|max:30',
-            'byproducts.*.loc_code'   => 'nullable|string|max:200',
+            'byproducts.*.loc_code'   => 'nullable|string|max:200|exists:inventory_locations,code',
         ]);
         $user = auth()->user()?->user_id ?? '';
         DB::beginTransaction();

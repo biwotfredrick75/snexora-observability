@@ -1,0 +1,35 @@
+# Runs the cast.yaml gateway collector, bridged onto both the nexora stack's
+# network and SigNoz's own network so it can reach `signoz-ingester-1` by
+# container name. Start from repo root:
+#   docker compose -f nexora-infrastructure/nexora-infrastructure/otel-collector/otel-collector-compose.yaml -p nexora up -d
+#
+# Requires the `nexora_default` network to already exist (created by
+# nexora/docker-compose.yml) and `signoz-network` to already exist (created
+# by the SigNoz stack).
+
+services:
+  cast-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    container_name: cast-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel/cast.yaml"]
+    volumes:
+      - ./cast.yaml:/etc/otel/cast.yaml:ro
+    environment:
+      # Local-dev defaults — override these two when running this same
+      # image/config against a different SigNoz (e.g. a production
+      # instance), no edits to cast.yaml required.
+      SIGNOZ_OTLP_ENDPOINT: "signoz-ingester-1:4317"
+      SIGNOZ_OTLP_INSECURE: "true"
+    ports:
+      - "4319:4317" # OTLP gRPC — host-run services (php artisan serve, go run, vite dev)
+      - "4320:4318" # OTLP HTTP  — host-run services / browser dev servers
+    networks:
+      - nexora_default
+      - signoz-network
+
+networks:
+  nexora_default:
+    external: true
+  signoz-network:
+    external: true

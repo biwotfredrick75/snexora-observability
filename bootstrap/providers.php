@@ -2,6 +2,7 @@
 
 return [
     App\Providers\AppServiceProvider::class,
+    App\Providers\OpenTelemetryServiceProvider::class,
     // App\Modules\Hrm\HrmServiceProvider::class,
     // ^ Disabled: superseded by the App\Http\Controllers\Hrm + App\Models
     //   (Department/JobTitle/Employee, plain `employees`/`departments`/

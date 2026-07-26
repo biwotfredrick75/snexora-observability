@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
+use Spatie\Permission\Models\Role;
 
 class UserSeeder extends Seeder
 {
@@ -13,6 +14,13 @@ class UserSeeder extends Seeder
      */
     public function run(): void
     {
+        // Roles/permissions are seeded under guard "api" (RolePermissionSeeder),
+        // but User has no $guard_name override, so assignRole()/syncRoles()
+        // resolve against the default "web" guard unless a Role instance
+        // (already scoped to "api") is passed explicitly -- a bare role
+        // name string here throws RoleDoesNotExist.
+        $role = fn (string $name) => Role::where('name', $name)->where('guard_name', 'api')->firstOrFail();
+
         // Admin user
         $admin = User::firstOrCreate(
             ['email' => 'admin@verp.local'],
@@ -53,7 +61,7 @@ class UserSeeder extends Seeder
                 'inactive' => false,
             ]
         );
-        $admin->syncRoles(['super_admin']);
+        $admin->syncRoles([$role('super_admin')]);
 
         // Manager user
         $manager = User::firstOrCreate(
@@ -95,7 +103,11 @@ class UserSeeder extends Seeder
                 'inactive' => false,
             ]
         );
-        $manager->assignRole('manager');
+        // "manager"/"supervisor"/"viewer"/"guest" aren't in RolePermissionSeeder's
+        // role list (super_admin, admin, sales_manager, purchase_manager,
+        // inventory_manager, sacco_officer, sacco_manager, user) -- mapped to
+        // the closest existing equivalent rather than inventing new roles here.
+        $manager->assignRole($role('admin'));
 
         // Supervisor user
         $supervisor = User::firstOrCreate(
@@ -137,7 +149,7 @@ class UserSeeder extends Seeder
                 'inactive' => false,
             ]
         );
-        $supervisor->assignRole('supervisor');
+        $supervisor->assignRole($role('supervisor'));
 
         // Regular user
         $user = User::firstOrCreate(
@@ -179,7 +191,7 @@ class UserSeeder extends Seeder
                 'inactive' => false,
             ]
         );
-        $user->assignRole('user');
+        $user->assignRole($role('user'));
 
         // Viewer user
         $viewer = User::firstOrCreate(
@@ -221,7 +233,7 @@ class UserSeeder extends Seeder
                 'inactive' => false,
             ]
         );
-        $viewer->assignRole('viewer');
+        $viewer->assignRole($role('user'));
 
         // Guest user
         $guest = User::firstOrCreate(
@@ -263,7 +275,7 @@ class UserSeeder extends Seeder
                 'inactive' => false,
             ]
         );
-        $guest->assignRole('guest');
+        $guest->assignRole($role('user'));
 
         $this->command->info('✅ Users created successfully');
         $this->command->info('');

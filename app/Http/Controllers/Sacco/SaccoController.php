@@ -4,263 +4,199 @@ namespace App\Http\Controllers\Sacco;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
-use App\Models\GlSetting;
-use App\Models\SaccoAccount;
-use App\Models\SaccoLoan;
-use App\Models\SaccoLoanGuarantor;
-use App\Models\SaccoLoanProduct;
-use App\Models\SaccoLoanRepaymentSchedule;
-use App\Models\SaccoMember;
-use App\Models\SaccoTransaction;
-use App\Services\Sacco\LoanAmortizationService;
-use App\Services\Sacco\SaccoGlPostingService;
-use Carbon\Carbon;
+use App\Models\Farmer;
+use App\Services\Sacco\SaccoServiceClient;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Thin proxy to the standalone nexora-sacco Go service, which now owns all
+ * SACCO domain data (members/shares/savings/loans/GL) -- same role
+ * EtimsController plays for the etims-gateway. Local sacco_* tables/models
+ * are deprecated (kept readable, no longer written to); see the class
+ * docblocks on those models.
+ *
+ * IDs returned by the Go service are UUID strings, not the auto-increment
+ * ints the old local-table version returned -- any frontend code that
+ * parsed sacco IDs as integers needs to switch to opaque string IDs.
+ */
 class SaccoController extends Controller
 {
-    public function __construct(
-        private LoanAmortizationService $amortization,
-        private SaccoGlPostingService $gl,
-    ) {}
+    public function __construct(private SaccoServiceClient $client) {}
 
     // ── Members ──────────────────────────────────────────────────────────────
 
     public function indexMembers(Request $request): JsonResponse
     {
-        $query = SaccoMember::with(['farmer:id,farmer_no,full_name,phone', 'accounts']);
+        $filters = array_filter([
+            'status' => $request->query('status'),
+            'search' => $request->query('search'),
+        ]);
+        $members = $this->client->listMembers($filters);
 
-        if ($request->filled('search')) {
-            $s = $request->search;
-            $query->where(fn ($q) => $q
-                ->where('membership_no', 'like', "%{$s}%")
-                ->orWhereHas('farmer', fn ($f) => $f
-                    ->where('full_name', 'like', "%{$s}%")
-                    ->orWhere('farmer_no', 'like', "%{$s}%")));
-        }
-        if ($request->filled('status')) {
-            $query->where('status', $request->status);
-        }
-
-        return ApiResponse::success($query->orderByDesc('id')->limit(200)->get(), 'Members retrieved');
+        return ApiResponse::success($this->hydrateFarmers($members), 'Members retrieved');
     }
 
     public function storeMember(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'farmer_id' => 'required|integer|exists:farmers,id|unique:sacco_members,farmer_id',
+            'farmer_id' => 'required|integer|exists:farmers,id',
             'join_date' => 'required|date',
         ]);
 
-        $user = auth()->user()?->user_id ?? 'system';
+        $farmer = Farmer::find($data['farmer_id']);
 
-        $member = DB::transaction(function () use ($data, $user) {
-            $member = SaccoMember::create([
-                'membership_no' => $this->nextMembershipNo(),
-                'farmer_id'     => $data['farmer_id'],
-                'join_date'     => $data['join_date'],
-                'status'        => 'active',
-                'created_by'    => $user,
-            ]);
-
-            // Every member gets exactly one savings and one shares account,
-            // created here rather than lazily — the rest of the module
-            // (deposits, loan eligibility checks) assumes both always exist.
-            SaccoAccount::create([
-                'member_id'    => $member->id,
-                'account_type' => 'savings',
-                'account_no'   => $member->membership_no . '-SAV',
-            ]);
-            SaccoAccount::create([
-                'member_id'    => $member->id,
-                'account_type' => 'shares',
-                'account_no'   => $member->membership_no . '-SHR',
-            ]);
-
-            return $member;
-        });
-
-        return ApiResponse::created($member->load(['farmer', 'accounts']), 'Member registered');
-    }
-
-    public function showMember(int $id): JsonResponse
-    {
-        $member = SaccoMember::with([
-            'farmer', 'accounts.transactions',
-            'loans.product', 'loans.schedule', 'loans.guarantors.guarantor.farmer',
-        ])->find($id);
-
-        if (! $member) {
-            return ApiResponse::notFound('Member not found');
-        }
-
-        $this->enrichAccounts($member->accounts);
-
-        return ApiResponse::success($member, 'Member retrieved');
-    }
-
-    public function updateMember(Request $request, int $id): JsonResponse
-    {
-        $member = SaccoMember::find($id);
-        if (! $member) {
-            return ApiResponse::notFound('Member not found');
-        }
-
-        $data = $request->validate([
-            'status' => 'sometimes|string|in:active,inactive,exited',
+        $member = $this->client->createMember([
+            'full_name'  => $farmer->full_name,
+            'phone'      => $farmer->phone,
+            'join_date'  => $data['join_date'],
+            'external_ref_type' => 'farmer',
+            'external_ref_id'   => (string) $farmer->id,
         ]);
 
-        $member->update($data);
+        return ApiResponse::created($this->hydrateFarmer($member), 'Member registered');
+    }
+
+    public function showMember(string $id): JsonResponse
+    {
+        $member = $this->client->getMember($id);
+        if (! $member) {
+            return ApiResponse::notFound('Member not found');
+        }
+
+        $summary = $this->client->getBalanceSummary($id);
+
+        return ApiResponse::success(array_merge($this->hydrateFarmer($member), [
+            'balance_summary' => $summary,
+        ]), 'Member retrieved');
+    }
+
+    public function updateMember(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate([
+            'status' => 'sometimes|string|in:active,dormant,exited,deceased',
+        ]);
+
+        $member = $this->client->updateMember($id, $data);
+        if (! $member) {
+            return ApiResponse::notFound('Member not found');
+        }
 
         return ApiResponse::updated($member, 'Member updated');
     }
 
-    private function nextMembershipNo(): string
+    /** @param array<int, array<string, mixed>> $members */
+    private function hydrateFarmers(array $members): array
     {
-        $count = SaccoMember::count();
-        return 'SAC-' . str_pad((string) ($count + 1), 5, '0', STR_PAD_LEFT);
+        return array_map(fn ($m) => $this->hydrateFarmer($m), $members);
+    }
+
+    /** Joins in the Farmer record the Go service only knows as an opaque external_ref_id. */
+    private function hydrateFarmer(array $member): array
+    {
+        if (($member['external_ref_type'] ?? null) === 'farmer' && ! empty($member['external_ref_id'])) {
+            $member['farmer'] = Farmer::select('id', 'farmer_no', 'full_name', 'phone')
+                ->find((int) $member['external_ref_id']);
+        }
+
+        return $member;
     }
 
     // ── Accounts (savings / shares) ─────────────────────────────────────────
 
+    /**
+     * Combined savings + shares listing, merged and hydrated with farmer
+     * info the same way the pre-rewrite indexAccounts() did -- the Go
+     * service tracks these as two separate account types with no shared
+     * "all accounts" endpoint, so the merge happens here.
+     */
     public function indexAccounts(Request $request): JsonResponse
     {
-        $query = SaccoAccount::with('member.farmer:id,farmer_no,full_name');
+        $memberId = $request->query('member_id');
+        $accountType = $request->query('account_type');
+        $filters = $memberId ? ['member_id' => $memberId] : [];
 
-        if ($request->filled('member_id')) {
-            $query->where('member_id', $request->integer('member_id'));
+        $accounts = [];
+
+        if ($accountType !== 'shares') {
+            foreach ($this->client->listSavingsAccounts($filters) as $a) {
+                $rate = (float) ($a['interest_rate_pct'] ?? 0);
+                $accounts[] = array_merge($a, [
+                    'account_type' => 'savings',
+                    'projected_annual_earnings' => round((float) $a['balance'] * $rate / 100, 2),
+                    'savings_interest_rate_pct' => $rate,
+                ]);
+            }
         }
-        if ($request->filled('account_type')) {
-            $query->where('account_type', $request->account_type);
+        if ($accountType !== 'savings') {
+            foreach ($this->client->listShareAccounts($filters) as $a) {
+                $accounts[] = array_merge($a, [
+                    'account_type' => 'shares',
+                    'balance' => $a['value'],
+                    'redemption_value' => $a['value'],
+                ]);
+            }
         }
 
-        $accounts = $query->orderByDesc('id')->limit(200)->get();
-        $this->enrichAccounts($accounts);
+        $accounts = $this->hydrateMembers($accounts);
 
         return ApiResponse::success($accounts, 'Accounts retrieved');
     }
 
-    /**
-     * Appends a member-facing estimate to each account — not a real accrued
-     * balance (no interest has actually been declared/posted anywhere):
-     * savings gets a projected annual earnings figure at the configured
-     * rate, shares gets what the member would receive if they sold at book
-     * value (currently just their contributed balance — no per-share
-     * appreciation model exists yet).
-     */
-    private function enrichAccounts($accounts): void
+    /** Joins in each account's member (and that member's farmer) by member_id, batching lookups per unique member. */
+    private function hydrateMembers(array $accounts): array
     {
-        $rate = (float) (GlSetting::first()?->sacco_savings_interest_rate_pct ?? 0);
-        foreach ($accounts as $acct) {
-            if ($acct->account_type === 'savings') {
-                $acct->projected_annual_earnings = round((float) $acct->balance * $rate / 100, 2);
-                $acct->savings_interest_rate_pct = $rate;
-            } else {
-                $acct->redemption_value = (float) $acct->balance;
+        $memberCache = [];
+        foreach ($accounts as &$acct) {
+            $memberId = $acct['member_id'] ?? null;
+            if (! $memberId) {
+                continue;
             }
+            if (! array_key_exists($memberId, $memberCache)) {
+                $memberCache[$memberId] = $this->hydrateFarmer($this->client->getMember($memberId) ?? []);
+            }
+            $acct['member'] = $memberCache[$memberId];
         }
+
+        return $accounts;
     }
 
-    public function deposit(Request $request, int $account): JsonResponse
+    public function deposit(Request $request, string $account): JsonResponse
     {
-        $acct = SaccoAccount::find($account);
-        if (! $acct) {
-            return ApiResponse::notFound('Account not found');
-        }
-
         $data = $this->validateTransactionInput($request);
-        $user = auth()->user()?->user_id ?? 'system';
 
-        // Buying shares vs. depositing savings post to different GL accounts
-        // and use different sacco_transactions.type values — the account's
-        // own type determines which, the caller doesn't choose.
-        $isShares = $acct->account_type === 'shares';
-        $type     = $isShares ? 'share_purchase' : 'deposit';
+        if (($data['account_type'] ?? 'savings') === 'shares') {
+            $result = $this->client->purchaseSharesByAmount($account, (float) $data['amount']);
 
-        $txn = DB::transaction(function () use ($acct, $data, $type, $isShares, $user) {
-            $txn = SaccoTransaction::create([
-                'account_id'       => $acct->id,
-                'type'             => $type,
-                'amount'           => $data['amount'],
-                'reference'        => $data['reference'] ?? null,
-                'transaction_date' => $data['transaction_date'],
-                'narration'        => $data['narration'] ?? null,
-                'source'           => $data['source'] ?? 'cash',
-                'created_by'       => $user,
-            ]);
+            return ApiResponse::created($result, 'Share purchase recorded');
+        }
 
-            $acct->balance = round((float) $acct->balance + (float) $data['amount'], 2);
-            $acct->save();
+        $result = $this->client->deposit($account, (float) $data['amount'], $data['narration'] ?? '');
 
-            $isShares
-                ? $this->gl->postSharePurchase($txn, $user)
-                : $this->gl->postSavingsDeposit($txn, $user);
-
-            return $txn;
-        });
-
-        return ApiResponse::created(
-            ['transaction' => $txn, 'balance' => $acct->fresh()->balance],
-            ($isShares ? 'Share purchase' : 'Deposit') . ' recorded'
-        );
+        return ApiResponse::created($result, 'Deposit recorded');
     }
 
-    public function withdraw(Request $request, int $account): JsonResponse
+    public function withdraw(Request $request, string $account): JsonResponse
     {
-        $acct = SaccoAccount::find($account);
-        if (! $acct) {
-            return ApiResponse::notFound('Account not found');
-        }
-        // Shares aren't freely withdrawable in a SACCO the way savings are —
-        // surrendering shares is a separate, more controlled process not in
-        // this module's v1 scope.
-        if ($acct->account_type !== 'savings') {
+        $data = $this->validateTransactionInput($request);
+
+        if (($data['account_type'] ?? 'savings') === 'shares') {
             return ApiResponse::error('Only savings accounts support withdrawals', 422);
         }
 
-        $data = $this->validateTransactionInput($request);
+        $result = $this->client->withdraw($account, (float) $data['amount'], $data['narration'] ?? '');
 
-        if ((float) $data['amount'] > (float) $acct->balance + 0.005) {
-            return ApiResponse::validationError([
-                'amount' => ['Insufficient balance — available ' . round((float) $acct->balance, 2)],
-            ]);
-        }
-
-        $user = auth()->user()?->user_id ?? 'system';
-
-        $txn = DB::transaction(function () use ($acct, $data, $user) {
-            $txn = SaccoTransaction::create([
-                'account_id'       => $acct->id,
-                'type'             => 'withdrawal',
-                'amount'           => $data['amount'],
-                'reference'        => $data['reference'] ?? null,
-                'transaction_date' => $data['transaction_date'],
-                'narration'        => $data['narration'] ?? null,
-                'source'           => $data['source'] ?? 'cash',
-                'created_by'       => $user,
-            ]);
-
-            $acct->balance = round((float) $acct->balance - (float) $data['amount'], 2);
-            $acct->save();
-
-            $this->gl->postSavingsWithdrawal($txn, $user);
-
-            return $txn;
-        });
-
-        return ApiResponse::created(['transaction' => $txn, 'balance' => $acct->fresh()->balance], 'Withdrawal recorded');
+        return ApiResponse::updated($result, 'Withdrawal recorded');
     }
 
     private function validateTransactionInput(Request $request): array
     {
         return $request->validate([
-            'amount'           => 'required|numeric|min:0.01',
-            'transaction_date' => 'required|date',
-            'source'           => 'nullable|string|in:cash,bank,manual',
-            'narration'        => 'nullable|string|max:255',
-            'reference'        => 'nullable|string|max:30',
+            'amount'       => 'required|numeric|min:0.01',
+            'account_type' => 'nullable|string|in:savings,shares',
+            'narration'    => 'nullable|string|max:255',
+            'reference'    => 'nullable|string|max:30',
         ]);
     }
 
@@ -268,20 +204,20 @@ class SaccoController extends Controller
 
     public function indexLoanProducts(): JsonResponse
     {
-        return ApiResponse::success(SaccoLoanProduct::orderBy('name')->get(), 'Loan products retrieved');
+        return ApiResponse::success($this->client->listLoanProducts(), 'Loan products retrieved');
     }
 
     public function storeLoanProduct(Request $request): JsonResponse
     {
         $data = $request->validate([
+            'code'                    => 'required|string|max:20',
             'name'                    => 'required|string|max:100',
             'interest_rate_pct'       => 'required|numeric|min:0|max:100',
             'max_term_months'         => 'required|integer|min:1',
             'max_savings_multiplier'  => 'nullable|numeric|min:0',
-            'status'                  => 'nullable|string|in:active,inactive',
         ]);
 
-        $product = SaccoLoanProduct::create(array_merge($data, ['status' => $data['status'] ?? 'active']));
+        $product = $this->client->createLoanProduct($data);
 
         return ApiResponse::created($product, 'Loan product created');
     }
@@ -290,85 +226,35 @@ class SaccoController extends Controller
 
     public function indexLoans(Request $request): JsonResponse
     {
-        $query = SaccoLoan::with(['member.farmer:id,farmer_no,full_name', 'product']);
+        $filters = array_filter([
+            'member_id' => $request->query('member_id'),
+            'status'    => $request->query('status'),
+        ]);
 
-        if ($request->filled('member_id')) {
-            $query->where('member_id', $request->integer('member_id'));
-        }
-        if ($request->filled('status')) {
-            $query->where('status', $request->status);
-        }
-
-        return ApiResponse::success($query->orderByDesc('id')->limit(200)->get(), 'Loans retrieved');
+        return ApiResponse::success($this->client->listLoans($filters), 'Loans retrieved');
     }
 
     public function storeLoanApplication(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'member_id'                       => 'required|integer|exists:sacco_members,id',
-            'product_id'                      => 'required|integer|exists:sacco_loan_products,id',
-            'principal_amount'                => 'required|numeric|min:0.01',
-            'term_months'                     => 'required|integer|min:1',
-            'application_date'                => 'required|date',
-            'guarantors'                      => 'nullable|array',
-            'guarantors.*.member_id'          => 'required_with:guarantors|integer|exists:sacco_members,id',
-            'guarantors.*.guaranteed_amount'  => 'required_with:guarantors|numeric|min:0',
+            'member_id'        => 'required|string',
+            'product_id'       => 'required|string',
+            'principal_amount' => 'required|numeric|min:0.01',
+            'term_months'      => 'required|integer|min:1',
         ]);
 
-        $product = SaccoLoanProduct::findOrFail($data['product_id']);
+        $loan = $this->client->applyLoan($data['member_id'], $data['product_id'], (float) $data['principal_amount'], (int) $data['term_months']);
 
-        if ($data['term_months'] > $product->max_term_months) {
-            return ApiResponse::validationError([
-                'term_months' => ["Exceeds this product's maximum of {$product->max_term_months} months"],
-            ]);
+        if (empty($loan)) {
+            return ApiResponse::validationError(['principal_amount' => ['Loan application rejected by the SACCO service -- check eligibility (term/savings multiplier).']]);
         }
 
-        if ($product->max_savings_multiplier) {
-            $savings = (float) (SaccoAccount::where('member_id', $data['member_id'])
-                ->where('account_type', 'savings')->value('balance') ?? 0);
-            $maxLoan = round($savings * (float) $product->max_savings_multiplier, 2);
-            if ((float) $data['principal_amount'] > $maxLoan + 0.005) {
-                return ApiResponse::validationError([
-                    'principal_amount' => [
-                        "Exceeds the maximum of {$maxLoan} ({$product->max_savings_multiplier}x savings balance of {$savings})",
-                    ],
-                ]);
-            }
-        }
-
-        $user = auth()->user()?->user_id ?? 'system';
-
-        $loan = DB::transaction(function () use ($data, $product, $user) {
-            $loan = SaccoLoan::create([
-                'loan_no'             => $this->nextLoanNo(),
-                'member_id'           => $data['member_id'],
-                'product_id'          => $product->id,
-                'principal_amount'    => $data['principal_amount'],
-                'interest_rate_pct'   => $product->interest_rate_pct,
-                'term_months'         => $data['term_months'],
-                'application_date'    => $data['application_date'],
-                'status'              => 'pending',
-                'outstanding_balance' => $data['principal_amount'],
-                'created_by'          => $user,
-            ]);
-
-            foreach ($data['guarantors'] ?? [] as $g) {
-                SaccoLoanGuarantor::create([
-                    'loan_id'           => $loan->id,
-                    'member_id'         => $g['member_id'],
-                    'guaranteed_amount' => $g['guaranteed_amount'],
-                ]);
-            }
-
-            return $loan;
-        });
-
-        return ApiResponse::created($loan->load(['guarantors.guarantor.farmer', 'member.farmer']), 'Loan application submitted');
+        return ApiResponse::created($loan, 'Loan application submitted');
     }
 
-    public function showLoan(int $id): JsonResponse
+    public function showLoan(string $id): JsonResponse
     {
-        $loan = SaccoLoan::with(['member.farmer', 'product', 'guarantors.guarantor.farmer', 'schedule'])->find($id);
+        $loan = $this->client->getLoan($id);
         if (! $loan) {
             return ApiResponse::notFound('Loan not found');
         }
@@ -376,119 +262,49 @@ class SaccoController extends Controller
         return ApiResponse::success($loan, 'Loan retrieved');
     }
 
-    public function approveLoan(int $id): JsonResponse
+    public function approveLoan(string $id): JsonResponse
     {
-        $loan = SaccoLoan::find($id);
-        if (! $loan) {
-            return ApiResponse::notFound('Loan not found');
-        }
-        if ($loan->status !== 'pending') {
-            return ApiResponse::error('Only a pending loan can be approved', 422);
-        }
-
-        $loan->update([
-            'status'      => 'approved',
-            'approved_by' => auth()->user()?->user_id ?? 'system',
-        ]);
+        $loan = $this->client->approveLoan($id);
 
         return ApiResponse::updated($loan, 'Loan approved');
     }
 
-    public function rejectLoan(int $id): JsonResponse
+    public function rejectLoan(string $id): JsonResponse
     {
-        $loan = SaccoLoan::find($id);
-        if (! $loan) {
-            return ApiResponse::notFound('Loan not found');
-        }
-        if (! in_array($loan->status, ['pending', 'approved'])) {
-            return ApiResponse::error('Loan cannot be rejected from its current status', 422);
-        }
-
-        $loan->update(['status' => 'rejected']);
+        $loan = $this->client->rejectLoan($id);
 
         return ApiResponse::updated($loan, 'Loan rejected');
     }
 
-    public function disburseLoan(Request $request, int $id): JsonResponse
+    public function disburseLoan(Request $request, string $id): JsonResponse
     {
-        $loan = SaccoLoan::find($id);
-        if (! $loan) {
-            return ApiResponse::notFound('Loan not found');
-        }
-        if ($loan->status !== 'approved') {
-            return ApiResponse::error('Loan must be approved before it can be disbursed', 422);
-        }
+        $data = $request->validate(['disbursement_method' => 'nullable|string|in:cash,bank,mobile_money']);
 
-        $data = $request->validate([
-            'disbursement_date' => 'required|date',
-        ]);
+        $loan = $this->client->disburseLoan($id, $data['disbursement_method'] ?? 'cash');
 
-        $user = auth()->user()?->user_id ?? 'system';
-
-        $loan = DB::transaction(function () use ($loan, $data, $user) {
-            $rows = $this->amortization->buildSchedule(
-                (float) $loan->principal_amount,
-                (float) $loan->interest_rate_pct,
-                $loan->term_months,
-                Carbon::parse($data['disbursement_date']),
-            );
-
-            foreach ($rows as $row) {
-                SaccoLoanRepaymentSchedule::create(array_merge($row, ['loan_id' => $loan->id]));
-            }
-
-            $loan->update([
-                'status'             => 'disbursed',
-                'disbursement_date'  => $data['disbursement_date'],
-                'disbursed_by'       => $user,
-            ]);
-
-            $this->gl->postLoanDisbursement($loan, $user);
-
-            return $loan;
-        });
-
-        return ApiResponse::updated($loan->load('schedule'), 'Loan disbursed');
+        return ApiResponse::updated($loan, 'Loan disbursed');
     }
 
     // ── Repayments ────────────────────────────────────────────────────────────
 
-    public function repayCash(Request $request, int $id): JsonResponse
+    public function repayCash(Request $request, string $id): JsonResponse
     {
-        $loan = SaccoLoan::find($id);
-        if (! $loan) {
-            return ApiResponse::notFound('Loan not found');
-        }
-
         $data = $request->validate([
-            'installment_id' => 'required|integer|exists:sacco_loan_repayment_schedule,id',
-            'paid_date'       => 'required|date',
-            'paid_via'        => 'required|string|in:cash,bank',
+            'amount'   => 'required|numeric|min:0.01',
+            'paid_via' => 'required|string|in:cash,bank',
         ]);
 
-        $installment = SaccoLoanRepaymentSchedule::where('loan_id', $loan->id)->find($data['installment_id']);
-        if (! $installment) {
-            return ApiResponse::notFound('Installment not found for this loan');
-        }
-        if ($installment->status === 'paid') {
-            return ApiResponse::error('Installment already paid', 422);
-        }
+        $repayment = $this->client->repayLoan($id, (float) $data['amount'], $data['paid_via']);
 
-        $user = auth()->user()?->user_id ?? 'system';
-
-        DB::transaction(function () use ($installment, $loan, $data, $user) {
-            $this->settleInstallment($installment, $loan, $data['paid_via'], $data['paid_date'], $user);
-        });
-
-        return ApiResponse::updated($installment->fresh(), 'Repayment recorded');
+        return ApiResponse::updated($repayment, 'Repayment recorded');
     }
 
     /**
-     * Posts installments due for a period into farmer_checkoff_entries
-     * (reusing the same table MilkPayslipController::payslips() already
-     * sums into net pay — no changes needed there) and settles them the
-     * same way repayCash() does. Guarded against double-posting by
-     * checkoff_posted_at — re-running for the same period is a no-op.
+     * Calls the SACCO service's checkoff endpoint, then inserts the returned
+     * rows into farmer_checkoff_entries here in Laravel -- the Go service
+     * never touches Laravel's tables directly. Reuses the existing
+     * (source_type, source_ref) unique index for the double-post guard, so
+     * no schema change is needed on the Laravel side.
      */
     public function postCheckoffForPeriod(Request $request): JsonResponse
     {
@@ -497,8 +313,7 @@ class SaccoController extends Controller
             'year'  => 'required|integer|min:2000',
         ]);
 
-        $user      = auth()->user()?->user_id ?? 'system';
-        $periodEnd = Carbon::create($data['year'], $data['month'])->endOfMonth();
+        $results = $this->client->postCheckoffForPeriod((int) $data['month'], (int) $data['year']);
 
         $serviceId = DB::table('checkoff_services')->where('service_name', 'SACCO Loan Repayment')->value('id');
         if (! $serviceId) {
@@ -511,134 +326,91 @@ class SaccoController extends Controller
             ]);
         }
 
-        $due = SaccoLoanRepaymentSchedule::with('loan.member')
-            ->where('status', 'pending')
-            ->whereNull('checkoff_posted_at')
-            ->where('due_date', '<=', $periodEnd)
-            ->get();
-
-        $posted = [];
-
-        DB::transaction(function () use ($due, $data, $serviceId, $user, $periodEnd, &$posted) {
-            foreach ($due as $installment) {
-                $loan     = $installment->loan;
-                $farmerId = $loan->member->farmer_id;
-
-                $exists = DB::table('farmer_checkoff_entries')
-                    ->where('source_type', 'sacco_loan')
-                    ->where('source_ref', (string) $installment->id)
-                    ->exists();
-                if ($exists) {
-                    continue;
-                }
-
-                DB::table('farmer_checkoff_entries')->insert([
-                    'farmer_id'    => $farmerId,
-                    'month'        => $data['month'],
-                    'year'         => $data['year'],
-                    'service_id'   => $serviceId,
-                    'service_name' => 'SACCO Loan Repayment',
-                    'amount'       => $installment->total_due,
-                    'note'         => "Loan {$loan->loan_no}, installment #{$installment->installment_no}",
-                    'source_type'  => 'sacco_loan',
-                    'source_ref'   => (string) $installment->id,
-                    'created_at'   => now(),
-                    'updated_at'   => now(),
-                ]);
-
-                $this->settleInstallment($installment, $loan, 'milk_checkoff', $periodEnd->toDateString(), $user, checkoffPosted: true);
-
-                $posted[] = $installment->id;
+        $posted = 0;
+        foreach ($results as $row) {
+            $exists = DB::table('farmer_checkoff_entries')
+                ->where('source_type', 'sacco_loan')
+                ->where('source_ref', $row['source_ref'])
+                ->exists();
+            if ($exists) {
+                continue;
             }
-        });
 
-        return ApiResponse::success(
-            ['posted_installment_ids' => $posted, 'count' => count($posted)],
-            count($posted) . ' checkoff entries posted'
-        );
-    }
-
-    /** Shared by repayCash() and postCheckoffForPeriod() — marks an installment paid, updates the loan balance/status, and GL-posts. */
-    private function settleInstallment(
-        SaccoLoanRepaymentSchedule $installment,
-        SaccoLoan $loan,
-        string $paidVia,
-        string $paidDate,
-        string $user,
-        bool $checkoffPosted = false,
-    ): void {
-        $installment->update([
-            'amount_paid'        => $installment->total_due,
-            'status'             => 'paid',
-            'paid_via'           => $paidVia,
-            'paid_date'          => $paidDate,
-            'checkoff_posted_at' => $checkoffPosted ? now() : $installment->checkoff_posted_at,
-        ]);
-
-        $loan->outstanding_balance = round((float) $loan->outstanding_balance - (float) $installment->principal_due, 2);
-        $hasPending = SaccoLoanRepaymentSchedule::where('loan_id', $loan->id)->where('status', 'pending')->exists();
-        if ($loan->outstanding_balance <= 0.005 && ! $hasPending) {
-            $loan->status = 'settled';
+            DB::table('farmer_checkoff_entries')->insert([
+                'farmer_id'    => (int) $row['external_ref_id'],
+                'month'        => $data['month'],
+                'year'         => $data['year'],
+                'service_id'   => $serviceId,
+                'service_name' => 'SACCO Loan Repayment',
+                'amount'       => $row['amount'],
+                'note'         => "Loan {$row['loan_no']}, installment #{$row['installment_no']}",
+                'source_type'  => 'sacco_loan',
+                'source_ref'   => $row['source_ref'],
+                'deducted'     => false,
+                'created_at'   => now(),
+                'updated_at'   => now(),
+            ]);
+            $posted++;
         }
-        $loan->save();
 
-        $this->gl->postLoanRepayment($installment->fresh(), $paidVia, $user);
+        return ApiResponse::success(['count' => $posted], "{$posted} checkoff entries posted");
     }
-
-    private function nextLoanNo(): string
-    {
-        $count = SaccoLoan::count();
-        return 'LN-' . str_pad((string) ($count + 1), 6, '0', STR_PAD_LEFT);
-    }
-
-    // ── Dashboard ─────────────────────────────────────────────────────────────
 
     /**
-     * Consolidated repayment/recovery history across all loans — every
+     * Consolidated repayment/recovery history across all loans -- every
      * paid installment (cash, bank, or milk_checkoff), newest first.
      * Complements the per-loan schedule shown on showLoan().
      */
     public function repaymentHistory(Request $request): JsonResponse
     {
-        $query = SaccoLoanRepaymentSchedule::with(['loan.member.farmer:id,farmer_no,full_name', 'loan.product:id,name'])
-            ->where('status', 'paid');
+        $filters = array_filter([
+            'member_id' => $request->query('member_id'),
+            'loan_id'   => $request->query('loan_id'),
+            'paid_via'  => $request->query('paid_via'),
+            'from'      => $request->query('from'),
+            'to'        => $request->query('to'),
+        ]);
 
-        if ($request->filled('member_id')) {
-            $query->whereHas('loan', fn ($q) => $q->where('member_id', $request->integer('member_id')));
-        }
-        if ($request->filled('loan_id')) {
-            $query->where('loan_id', $request->integer('loan_id'));
-        }
-        if ($request->filled('paid_via')) {
-            $query->where('paid_via', $request->paid_via);
-        }
-        if ($request->filled('from')) {
-            $query->where('paid_date', '>=', $request->from);
-        }
-        if ($request->filled('to')) {
-            $query->where('paid_date', '<=', $request->to);
-        }
+        $result = $this->client->listRepayments($filters);
 
-        $rows = $query->orderByDesc('paid_date')->orderByDesc('id')->limit(500)->get();
+        $memberCache = [];
+        $rows = array_map(function ($r) use (&$memberCache) {
+            $memberId = $r['member_id'] ?? null;
+            if ($memberId && ! array_key_exists($memberId, $memberCache)) {
+                $memberCache[$memberId] = $this->hydrateFarmer($this->client->getMember($memberId) ?? []);
+            }
+
+            return [
+                'id' => $r['id'],
+                'paid_date' => $r['paid_date'],
+                'loan' => [
+                    'loan_no' => $r['loan_no'],
+                    'member' => $memberId ? $memberCache[$memberId] : null,
+                ],
+                'installment_no' => $r['installment_no'],
+                'principal_due' => $r['principal_component'],
+                'interest_due' => $r['interest_component'],
+                'amount_paid' => $r['amount'],
+                'paid_via' => $r['paid_via'],
+            ];
+        }, $result['rows'] ?? []);
 
         return ApiResponse::success([
-            'rows'  => $rows,
-            'total' => round((float) $rows->sum('amount_paid'), 2),
+            'rows' => $rows,
+            'total' => round((float) ($result['total'] ?? 0), 2),
         ], 'Repayment history retrieved');
     }
 
+    // ── Dashboard / Financials ────────────────────────────────────────────────
+
     public function dashboard(): JsonResponse
     {
-        return ApiResponse::success([
-            'total_members'         => SaccoMember::where('status', 'active')->count(),
-            'total_savings'         => (float) SaccoAccount::where('account_type', 'savings')->sum('balance'),
-            'total_shares'          => (float) SaccoAccount::where('account_type', 'shares')->sum('balance'),
-            'loans_outstanding'     => (float) SaccoLoan::whereIn('status', ['disbursed'])->sum('outstanding_balance'),
-            'active_loans'          => SaccoLoan::where('status', 'disbursed')->count(),
-            'pending_loans'         => SaccoLoan::where('status', 'pending')->count(),
-            // Recoveries — every installment ever collected, cash/bank/checkoff combined.
-            'total_recovered'       => round((float) SaccoLoanRepaymentSchedule::where('status', 'paid')->sum('amount_paid'), 2),
-            'total_interest_earned' => round((float) SaccoLoanRepaymentSchedule::where('status', 'paid')->sum('interest_due'), 2),
+        $summary = $this->client->dashboardSummary();
+
+        return ApiResponse::success($summary ?? [
+            'total_members' => 0, 'total_savings' => 0, 'total_shares' => 0,
+            'loans_outstanding' => 0, 'active_loans' => 0, 'pending_loans' => 0,
+            'total_recovered' => 0, 'total_interest_earned' => 0,
         ], 'Dashboard data retrieved');
     }
 }

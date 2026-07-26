@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
-         bootstrap="vendor/autoload.php"
+         bootstrap="tests/bootstrap.php"
          colors="true"
 >
     <testsuites>
@@ -18,23 +18,30 @@
         </include>
     </source>
     <php>
-        <env name="APP_ENV" value="testing"/>
-        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
-        <env name="BCRYPT_ROUNDS" value="4"/>
-        <env name="BROADCAST_CONNECTION" value="null"/>
-        <env name="CACHE_STORE" value="array"/>
+        <env name="APP_ENV" value="testing" force="true"/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file" force="true"/>
+        <env name="BCRYPT_ROUNDS" value="4" force="true"/>
+        <env name="BROADCAST_CONNECTION" value="null" force="true"/>
+        <env name="CACHE_STORE" value="array" force="true"/>
         <!-- No pdo_sqlite extension is installed on this host, so tests fall
              back to the same MySQL server as dev (DB_CONNECTION/host/user/
              password come from .env, unchanged) but a dedicated database —
              kept fully separate from the real DB_DATABASE=erp dev database.
              Credentials are deliberately NOT hardcoded here since phpunit.xml
-             is version-controlled; only the (non-secret) database name differs. -->
-        <env name="DB_DATABASE" value="erp_testing"/>
-        <env name="MAIL_MAILER" value="array"/>
-        <env name="QUEUE_CONNECTION" value="sync"/>
-        <env name="SESSION_DRIVER" value="array"/>
-        <env name="PULSE_ENABLED" value="false"/>
-        <env name="TELESCOPE_ENABLED" value="false"/>
-        <env name="NIGHTWATCH_ENABLED" value="false"/>
+             is version-controlled; only the (non-secret) database name differs.
+             force="true" is required on PHPUnit 11+: without it, <env> only
+             sets a variable that ISN'T already defined — since .env already
+             defines DB_DATABASE=erp, that value was silently winning over
+             this one, and the full test suite was migrating/wiping the real
+             dev database on every run instead of the isolated erp_testing
+             one. Confirmed live: erp's tables were being dropped and
+             recreated by `php8.3 artisan test` before this fix. -->
+        <env name="DB_DATABASE" value="erp_testing" force="true"/>
+        <env name="MAIL_MAILER" value="array" force="true"/>
+        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
+        <env name="SESSION_DRIVER" value="array" force="true"/>
+        <env name="PULSE_ENABLED" value="false" force="true"/>
+        <env name="TELESCOPE_ENABLED" value="false" force="true"/>
+        <env name="NIGHTWATCH_ENABLED" value="false" force="true"/>
     </php>
 </phpunit>

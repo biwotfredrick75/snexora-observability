@@ -123,6 +123,12 @@ return [
             'handler' => NullHandler::class,
         ],
 
+        'otel' => [
+            'driver' => 'monolog',
+            'level' => env('LOG_LEVEL', 'debug'),
+            'handler' => \App\Logging\OpenTelemetryLogHandler::class,
+        ],
+
         'emergency' => [
             'path' => storage_path('logs/laravel.log'),
         ],

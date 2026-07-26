@@ -44,9 +44,17 @@ class WorkOrderService
 
         $bom = \App\Models\Bom::with('items')->findOrFail($wo->bom_id);
 
-        // qty_required in BOM lines is per unit of finished output.
-        // Total required = qty_required × planned_qty
-        $scale = (float) $wo->planned_qty;
+        // qty_required in BOM lines is the absolute amount for one full
+        // standard batch (bom.standard_batch_qty — see its migration
+        // comment "qty this BOM produces"; this is exactly what
+        // BomController::import() stores from an ingredient sheet's
+        // "amount in 1 tonne" column). Scaling to an arbitrary planned
+        // output therefore means scaling relative to that standard batch,
+        // not multiplying the absolute per-batch amount by the output qty
+        // directly.
+        $scale = (float) $bom->standard_batch_qty > 0
+            ? (float) $wo->planned_qty / (float) $bom->standard_batch_qty
+            : (float) $wo->planned_qty;
 
         // Clear any previously generated items (e.g., re-release after edit)
         $wo->items()->delete();
@@ -489,7 +497,10 @@ class WorkOrderService
         );
         $postedUnitCost = $wo->actual_qty_produced > 0 ? round($postedCost / $wo->actual_qty_produced, 4) : 0;
 
-        // Stock receipt for finished goods (type 41)
+        // Stock receipt for finished goods (type 41). batch_no = the WO
+        // number itself — every unit from this production run carries it,
+        // so a bag sold in the field traces straight back to which Work
+        // Order (and therefore which BOM/ingredients/date) produced it.
         DB::table('stock_movements')->insert([
             'trans_no'      => $wo->id,
             'stock_id'      => $wo->product_code,
@@ -500,6 +511,7 @@ class WorkOrderService
             'price'         => $postedUnitCost,
             'standard_cost' => $postedUnitCost,
             'reference'     => $wo->wo_no,
+            'batch_no'      => $wo->wo_no,
             'comments'      => 'WO Settlement — ' . $wo->wo_no,
             'unique_key'    => \Illuminate\Support\Str::uuid()->toString(),
         ]);
@@ -512,6 +524,19 @@ class WorkOrderService
         $glBase = ['trans_no' => $wo->id, 'tran_date' => now()->toDateString(), 'reference' => $wo->wo_no, 'created_by' => $user];
         DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_RECEIPT, 'account_code' => $fgAccount,  'narration' => 'FG Receipt — ' . $wo->wo_no, 'amount' => $postedCost]));
         DB::table('gld_transactions')->insert(array_merge($glBase, ['type' => self::TYPE_WO_RECEIPT, 'account_code' => $wipAccount,  'narration' => 'WIP Clearance — ' . $wo->wo_no, 'amount' => -$postedCost]));
+
+        // Stamp the finished product's own cost fields with what production
+        // actually cost — otherwise the item master keeps whatever stale (often
+        // zero) purchase_cost it had before, which every cost fallback
+        // elsewhere (BOM costing, weighted-average price, etc.) reads first.
+        // Uses wo->unit_cost (materials+labour+overhead+scrap ÷ actual qty —
+        // the same figure the Cost Sheet report shows), not the scrap-excluded
+        // $postedUnitCost above, which exists only to keep the GL entry from
+        // crediting WIP for a scrap provision that was never actually debited.
+        DB::table('items')->where('stock_id', $wo->product_code)->update([
+            'standard_cost' => $wo->unit_cost,
+            'purchase_cost' => $wo->unit_cost,
+        ]);
 
         $wo->update(['status' => self::STATUS_CLOSED]);
     }

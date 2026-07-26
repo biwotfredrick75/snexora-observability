@@ -69,6 +69,7 @@ use App\Http\Controllers\Inventory\InventoryLocationController;
 use App\Http\Controllers\Inventory\StoreAllocationController;
 use App\Http\Controllers\Inventory\SalesKitController;
 use App\Http\Controllers\Inventory\ItemConversionController;
+use App\Http\Controllers\Inventory\PackConversionController;
 use App\Http\Controllers\Inventory\PackagingTypeController;
 use App\Http\Controllers\Inventory\PackagingQuantityController;
 use App\Http\Controllers\Inventory\ReorderLevelController;
@@ -571,6 +572,11 @@ Route::middleware('auth:api')->group(function () {
         Route::get('items/{itemId}/conversion-items',              [ItemConversionController::class, 'index']);
         Route::post('items/{itemId}/conversion-items',             [ItemConversionController::class, 'store']);
         Route::delete('items/{itemId}/conversion-items/{id}',      [ItemConversionController::class, 'destroy']);
+
+        // Pack Conversion — executes the conversion-items ratios above,
+        // converting on-hand bulk stock into pack-size SKU quantities.
+        Route::get('items/{itemId}/pack-conversion/preview',       [PackConversionController::class, 'preview']);
+        Route::post('items/{itemId}/pack-conversion',              [PackConversionController::class, 'store']);
 
         // Reorder Levels (nested under items)
         Route::get('items/{itemId}/reorder-levels',            [ReorderLevelController::class, 'index']);

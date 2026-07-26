@@ -1,0 +1,78 @@
+# cast.yaml — nexora telemetry gateway
+#
+# Standard OpenTelemetry Collector config. Sits between every nexora-*
+# service and SigNoz: services send traces/metrics/logs here over OTLP,
+# this collector batches/protects them, then forwards on to the existing
+# SigNoz OTel ingester (container `signoz-ingester-1`, port 4317/4318,
+# on the `signoz-network` docker network — see nexora-infrastructure's
+# otel-collector-compose.yaml for how this container joins both
+# `nexora_default` and `signoz-network`).
+#
+# Services covered (backend + web; mobile app excluded per current scope):
+#   - nexora-backend        (Laravel/PHP)   .env: OTEL_SERVICE_NAME=nexora-backend
+#   - nexora-sacco          (Go)            .env: OTEL_SERVICE_NAME=nexora-sacco
+#   - nexora-etims          (Go)            .env: OTEL_SERVICE_NAME=etims-gateway
+#   - nexora-tracking       (Go)            no OTel wiring yet — add before pointing here
+#   - nexora-ussd           (Go)            no OTel wiring yet — add before pointing here
+#   - nexora-blockchain     (Go)            no OTel wiring yet — add before pointing here
+#   - nexora-approval-service (Go)          no OTel wiring yet — add before pointing here
+#   - nexora-frontend       (Vue/browser)   src/services/otel.js — VITE_OTEL_EXPORTER_OTLP_ENDPOINT
+#   - nexora-etims-frontend (Vue/browser)   no OTel wiring yet — add before pointing here
+#
+# To route a service through this gateway instead of straight at SigNoz,
+# point its OTEL_EXPORTER_OTLP_ENDPOINT (or VITE_ equivalent) at:
+#   - from another docker container on nexora_default: http://cast-collector:4318 (http) / cast-collector:4317 (grpc)
+#   - from a process running on the host (php artisan serve, go run, vite dev): http://localhost:4320 (http) / localhost:4319 (grpc)
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - http://localhost:5173 # nexora-frontend dev server
+            - http://localhost:5174 # nexora-etims-frontend dev server
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  batch:
+    timeout: 2s
+
+exporters:
+  # Destination is env-driven (defaults set in otel-collector-compose.yaml)
+  # so this file never has to change between local dev and a live
+  # deployment — only the SIGNOZ_OTLP_ENDPOINT/SIGNOZ_OTLP_INSECURE env
+  # vars passed to the container change.
+  otlp/signoz:
+    endpoint: ${env:SIGNOZ_OTLP_ENDPOINT}
+    tls:
+      insecure: ${env:SIGNOZ_OTLP_INSECURE}
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/signoz]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/signoz]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/signoz]
+  telemetry:
+    logs:
+      level: info

@@ -8,6 +8,8 @@ use App\Models\Bom;
 use App\Models\BomItem;
 use App\Models\Item;
 use App\Models\ItemCategory;
+use App\Models\ItemConversionItem;
+use App\Services\Manufacturing\WorkOrderService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -167,10 +169,19 @@ class BomController extends Controller
     public function destroy(int $id): JsonResponse
     {
         $bom = Bom::findOrFail($id);
-        if ($bom->workOrders()->exists()) {
-            return ApiResponse::error('Cannot delete — work orders reference this BOM.', 422);
+        if ($bom->workOrders()->where('status', WorkOrderService::STATUS_IN_PROGRESS)->exists()) {
+            return ApiResponse::error('Cannot delete — a work order for this BOM is in progress.', 422);
         }
-        $bom->delete();
+
+        // bom_items.bom_id is a plain FK (noActionOnDelete, no cascade) —
+        // deleting the parent while lines still reference it throws a raw
+        // SQLSTATE[23000]/1451 straight through to the response. Delete the
+        // lines first, same as update() already does when replacing them.
+        DB::transaction(function () use ($bom) {
+            $bom->items()->delete();
+            $bom->delete();
+        });
+
         return ApiResponse::deleted('BOM deleted');
     }
 
@@ -219,11 +230,18 @@ class BomController extends Controller
      *
      * Bulk-creates a BOM from an uploaded ingredient sheet — a tab-separated
      * "recipe" export like INGREDIENT / FORMULAE / AMOUNT IN 1 TONNE / COST
-     * PER KG / TOTAL COST (a trailing STANDARDS/costing block, if present,
-     * is ignored — parsing stops at the TOTAL row). Any ingredient, or the
-     * finished product itself, that doesn't already exist as an Item is
-     * auto-created — matched by description first so re-importing the same
-     * sheet doesn't create duplicates.
+     * PER KG / TOTAL COST (ingredient parsing stops at the TOTAL row). Any
+     * ingredient, or the finished product itself, that doesn't already exist
+     * as an Item is auto-created — matched by description first so
+     * re-importing the same sheet doesn't create duplicates.
+     *
+     * The trailing costing block (rows like "COST PER/1KG", "COST PER /5KG",
+     * "COST PER 70KG" …) is where the sheet declares its pack sizes — each
+     * one is auto-created as its own finished-goods SKU (e.g. "<product>
+     * 20kg"), linked back to the bulk product via an ItemConversionItem
+     * ratio of 1/size (so producing N units of that pack consumes N*size of
+     * bulk stock — see PackConversionService). This is what previously had
+     * to be done by hand after every import.
      */
     public function import(Request $request): JsonResponse
     {
@@ -244,14 +262,15 @@ class BomController extends Controller
         $productCategory   = $this->resolveCategory($request->input('product_category_id'), 'Finished Goods');
         $componentCategory = $this->resolveCategory($request->input('component_category_id'), 'Raw Materials');
 
-        $rows = $this->parseIngredientFile($request->file('file'));
+        $rows      = $this->parseIngredientFile($request->file('file'));
+        $packSizes = $this->parsePackSizes($request->file('file'));
 
         if (empty($rows)) {
             return ApiResponse::validationError(['file' => 'No ingredient rows found in the uploaded file.']);
         }
 
         try {
-            $result = DB::transaction(function () use ($request, $rows, $productCategory, $componentCategory) {
+            $result = DB::transaction(function () use ($request, $rows, $packSizes, $productCategory, $componentCategory) {
                 $itemsCreated = [];
                 $itemsMatched = [];
 
@@ -329,10 +348,43 @@ class BomController extends Controller
                     ]);
                 }
 
+                // Pack-size SKUs declared by the sheet's own "COST PER Xkg"
+                // block — each becomes its own finished-goods item, linked
+                // back to the bulk product with a 1/size conversion ratio
+                // (see PackConversionService for how that ratio is consumed).
+                $packSkusCreated = [];
+                foreach ($packSizes as $size) {
+                    if ($size <= 0) continue;
+                    $sizeLabel = $this->formatPackSize($size);
+                    $packName  = trim($productName) . ' ' . $sizeLabel . 'kg';
+
+                    $packItem = Item::whereRaw('LOWER(description) = ?', [mb_strtolower($packName)])->first();
+                    if (!$packItem) {
+                        $packItem = $this->createItem($this->generateStockId($productCategory), $packName, 'M', 0, $productCategory->id, 'BAG');
+                        $itemsCreated[] = $packItem->stock_id;
+                        $packSkusCreated[] = $packItem->stock_id;
+                    } else {
+                        $itemsMatched[] = $packItem->stock_id;
+                    }
+
+                    $ratio = round(1 / $size, 8);
+                    $exists = ItemConversionItem::where('stock_id', $product->stock_id)
+                        ->where('component_id', $packItem->stock_id)
+                        ->exists();
+                    if (!$exists) {
+                        ItemConversionItem::create([
+                            'stock_id'          => $product->stock_id,
+                            'component_id'      => $packItem->stock_id,
+                            'quantity_produced' => $ratio,
+                        ]);
+                    }
+                }
+
                 return [
-                    'bom'           => $bom->fresh(['items']),
-                    'items_created' => array_values(array_unique($itemsCreated)),
-                    'items_matched' => array_values(array_unique($itemsMatched)),
+                    'bom'              => $bom->fresh(['items']),
+                    'items_created'    => array_values(array_unique($itemsCreated)),
+                    'items_matched'    => array_values(array_unique($itemsMatched)),
+                    'pack_skus_created'=> $packSkusCreated,
                 ];
             });
         } catch (\RuntimeException $e) {
@@ -340,12 +392,17 @@ class BomController extends Controller
         }
 
         $bom = $result['bom'];
-        $bom->items_created = $result['items_created'];
-        $bom->items_matched = $result['items_matched'];
+        $bom->items_created     = $result['items_created'];
+        $bom->items_matched     = $result['items_matched'];
+        $bom->pack_skus_created = $result['pack_skus_created'];
 
         $summary = "{$bom->bom_no} created with " . $bom->items->count() . ' components ('
             . count($result['items_created']) . ' new item(s) created, '
             . count($result['items_matched']) . ' matched existing)';
+        if (!empty($result['pack_skus_created'])) {
+            $summary .= ' + ' . count($result['pack_skus_created']) . ' pack-size SKU(s) created ('
+                . implode(', ', $result['pack_skus_created']) . ')';
+        }
 
         return ApiResponse::created($bom, $summary);
     }
@@ -401,6 +458,49 @@ class BomController extends Controller
         return $rows;
     }
 
+    /**
+     * Scans the whole file (independent of parseIngredientFile's early stop
+     * at TOTAL/STANDARDS) for a trailing pack-size costing block — rows
+     * whose first cell reads like "COST PER/1KG", "COST PER /5KG", "COST
+     * PER 70KG". Returns the distinct pack sizes found, in kg, e.g.
+     * [1.0, 5.0, 10.0, 20.0, 50.0, 70.0]. An ingredient name is never going
+     * to accidentally match this pattern, so no need to track where the
+     * ingredient section ended.
+     */
+    private function parsePackSizes($file): array
+    {
+        $firstLine = fgets(fopen($file->getRealPath(), 'r'));
+        $delimiter = substr_count($firstLine, "\t") >= substr_count($firstLine, ',') ? "\t" : ',';
+
+        $handle = fopen($file->getRealPath(), 'r');
+        if (!$handle) return [];
+
+        $bom = fread($handle, 3);
+        if ($bom !== "\xEF\xBB\xBF") rewind($handle);
+
+        $sizes = [];
+        $first = true;
+        while (($line = fgetcsv($handle, 0, $delimiter)) !== false) {
+            if ($first) { $first = false; continue; } // header row
+
+            $label = trim($line[0] ?? '');
+            if ($label !== '' && preg_match('/COST\s*PER\s*\/?\s*(\d+(?:\.\d+)?)\s*KG/i', $label, $m)) {
+                $sizes[(float) $m[1]] = (float) $m[1];
+            }
+        }
+        fclose($handle);
+
+        $sizes = array_values($sizes);
+        sort($sizes);
+        return $sizes;
+    }
+
+    /** Formats a pack size for a SKU name/description — "1" not "1.0", "2.5" stays "2.5". */
+    private function formatPackSize(float $size): string
+    {
+        return rtrim(rtrim(number_format($size, 4, '.', ''), '0'), '.');
+    }
+
     private function findColumn(array $headers, array $candidates): ?string
     {
         foreach ($candidates as $c) {
@@ -450,13 +550,13 @@ class BomController extends Controller
         return ItemCategory::firstOrCreate(['name' => $fallbackName]);
     }
 
-    private function createItem(string $stockId, string $description, string $mbFlag, float $cost, ?int $categoryId = null): Item
+    private function createItem(string $stockId, string $description, string $mbFlag, float $cost, ?int $categoryId = null, string $units = 'KG'): Item
     {
         return Item::create([
             'stock_id'      => $stockId,
             'category_id'   => $categoryId,
             'description'   => trim($description),
-            'units'         => 'KG',
+            'units'         => $units,
             'mb_flag'       => $mbFlag,
             'purchase_cost' => $cost,
             'standard_cost' => $cost,
@@ -474,11 +574,22 @@ class BomController extends Controller
                 ->orWhere('description', 'like', "%$q%")
             );
 
-        // When searching for a BOM's finished product, exclude raw/bought items (B flag)
-        // Allow M (manufactured), D (description/assembled), F (fabricated/kit)
+        // When searching for a BOM's/Work Order's finished product, exclude
+        // raw/bought items (B flag) — allow M (manufactured), D
+        // (description/assembled), F (fabricated/kit). mb_flag alone isn't
+        // enough though: pack-size SKUs (e.g. "DAIRY FEEDS 20kg") are also
+        // flagged M since they're auto-created as finished goods by
+        // import()'s pack-size parsing, but they have no BOM of their own —
+        // they're produced by converting bulk stock (PackConversionService),
+        // not by a Work Order. Also require an actual active BOM to exist
+        // for the item, so only things a Work Order could really produce
+        // show up here.
         $manufacturedOnly = $request->boolean('manufactured');
         if ($manufacturedOnly) {
-            $query->whereIn('mb_flag', ['M', 'D', 'F']);
+            $query->whereIn('mb_flag', ['M', 'D', 'F'])
+                ->whereIn('stock_id', function ($sub) {
+                    $sub->select('product_code')->from('boms')->where('is_active', true);
+                });
         }
 
         // The manufactured-only list backs a full dropdown (not a live-typeahead),
