@@ -22,10 +22,5 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
-API_*
-ARCHITECTURE.md
+*.md
 .claude
-IMPLEMENTATION.md
-README.md
-SETUP.md
-PASSPORT_AUTHORIZATION_*
